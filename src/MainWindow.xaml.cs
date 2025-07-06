@@ -26,16 +26,19 @@ public partial class MainWindow
         _hotkeyManager = new HotkeyManager(new WindowInteropHelper(this).Handle);
     }
 
-    private static IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg != Interoperability.WM_HOTKEY) return IntPtr.Zero;
-            
-        var selectedText = HotkeyManager.GetSelectedText();
-        if (!string.IsNullOrWhiteSpace(selectedText))
+        if (msg == Interoperability.WM_HOTKEY)
         {
-            SpeechManager.Instance.Speak(selectedText);
+            // If synthesizer is speaking, the Speak method will stop it
+            // If it's not speaking, it will read the selected text
+            var selectedText = HotkeyManager.GetSelectedText();
+            if (!string.IsNullOrWhiteSpace(selectedText))
+            {
+                SpeechManager.Instance.Speak(selectedText);
+            }
+            handled = true;
         }
-        handled = true;
         return IntPtr.Zero;
     }
 

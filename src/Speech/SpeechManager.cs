@@ -4,7 +4,7 @@ namespace NarratorHotkey.Speech
 {
     public class SpeechManager
     {
-        private static SpeechManager? _instance;
+        private static SpeechManager _instance;
         private readonly SpeechSynthesizer _synthesizer;
         private readonly AppSettings _settings;
 
@@ -18,21 +18,26 @@ namespace NarratorHotkey.Speech
             ApplySettings();
         }
 
+        
         public void ApplySettings()
         {
             _settings.Reload(); // Add this method to AppSettings
             _synthesizer.SelectVoice(_settings.SelectedVoice);
             _synthesizer.Rate = _settings.SpeechRate;
         }
-
+        
         public void Speak(string text)
         {
-            _synthesizer.SpeakAsync(text);
-        }
+            if (_synthesizer.State == SynthesizerState.Speaking)
+            {
+                _synthesizer.SpeakAsyncCancelAll();
+                return;
+            }
 
-        public void Stop()
-        {
-            _synthesizer.SpeakAsyncCancelAll();
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                _synthesizer.SpeakAsync(text);
+            }
         }
     }
 }
