@@ -1,6 +1,7 @@
 ﻿using System.Reflection;
 using System.Windows;
 using System.Windows.Forms;
+using NarratorHotkey.Speech;
 using Application = System.Windows.Application;
 
 namespace NarratorHotkey;
@@ -11,6 +12,11 @@ public partial class MainWindow
 
     public MainWindow()
     {
+
+        var s = new Synthesize();
+        
+        const string startupMessage = "Application started. Press Control and 2 to read selected text.";
+        Synthesize.ReadText(startupMessage);
         InitializeComponent();
         InitializeTrayIcon();
     }
@@ -26,7 +32,7 @@ public partial class MainWindow
         // Create context menu
         var contextMenu = new ContextMenuStrip();
         contextMenu.Items.Add("Settings", null, (s, e) => ShowSettings());
-
+        contextMenu.Items.Add("Update Voice Registry", null, (s, e) => VoiceInstallerHelper.RunVoiceInstaller());
         contextMenu.Items.Add("Exit", null, (s, e) => 
             { Application.Current.Shutdown(); });
         
