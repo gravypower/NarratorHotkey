@@ -1,7 +1,7 @@
 ﻿<Window x:Class="NarratorHotkey.Settings"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Settings" Height="300" Width="400"
+        Title="Settings" Height="350" Width="400"
         WindowStartupLocation="CenterScreen">
     <Grid Margin="10">
         <Grid.RowDefinitions>
@@ -10,15 +10,30 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Margin="0,0,0,10">
-            <CheckBox x:Name="StartWithWindowsCheckBox" 
-                      Content="Start with Windows" 
-                      Margin="0,5"/>
+            <GroupBox Header="Voice Settings" Margin="0,10">
+                <StackPanel Margin="5">
+                    <Label Content="Select Voice:"/>
+                    <ComboBox x:Name="VoiceComboBox" 
+                             Margin="0,5"/>
+                    
+                    <Label Content="Speech Rate:"/>
+                    <Slider x:Name="SpeechRateSlider"
+                           Minimum="-10"
+                           Maximum="10"
+                           TickFrequency="1"
+                           IsSnapToTickEnabled="True"
+                           TickPlacement="BottomRight"
+                           Margin="0,5"/>
+                    <TextBlock Text="{Binding ElementName=SpeechRateSlider, Path=Value, StringFormat=Rate: {0}}"
+                               HorizontalAlignment="Center"/>
+                </StackPanel>
+            </GroupBox>
             
-            <CheckBox x:Name="MinimizeToTrayCheckBox" 
-                      Content="Minimize to tray" 
-                      Margin="0,5"/>
-            
-            <!-- Add more settings controls here -->
+            <Button Content="Test Voice" 
+                    Width="100"
+                    HorizontalAlignment="Left"
+                    Margin="0,5"
+                    Click="TestVoice_Click"/>
         </StackPanel>
 
         <StackPanel Grid.Row="1" 

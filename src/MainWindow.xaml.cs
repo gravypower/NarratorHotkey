@@ -64,15 +64,13 @@ public partial class MainWindow
     private void ShowSettings()
     {
         var settingsWindow = new Settings();
-        // Remove the Owner property setting since it's causing issues
-        if (settingsWindow.ShowDialog() != true) return;
+        var result = settingsWindow.ShowDialog();
         
-        // Reload settings if needed
-        var settings = AppSettings.Load();
-        // Apply any immediate settings changes
-        if (settings.MinimizeToTray)
+        if (result == true)
         {
-            // Update minimize behavior
+            // Settings were saved, reload them
+            var settings = AppSettings.Load();
+            // Apply any immediate settings changes here if needed
         }
     }
 

@@ -1,56 +1,88 @@
+using System;
+
+namespace NarratorHotkey;
+
+using System.Speech.Synthesis;
 using System.Windows;
-using Microsoft.Win32;
 
-namespace NarratorHotkey
+public partial class Settings
 {
-    public partial class Settings : Window
+    private readonly AppSettings _settings;
+    private bool _shouldSaveSettings;
+
+    public Settings()
     {
-        private readonly AppSettings _settings;
+        InitializeComponent();
+        _settings = AppSettings.Load();
+        LoadSettings();
+        LoadVoices();
+    }
 
-        public Settings()
+    private void LoadVoices()
+    {
+        using var synth = new SpeechSynthesizer();
+        foreach (var voice in synth.GetInstalledVoices())
         {
-            InitializeComponent();
-            _settings = AppSettings.Load();
-            LoadSettings();
-        }
-
-        private void LoadSettings()
-        {
-            StartWithWindowsCheckBox.IsChecked = _settings.StartWithWindows;
-            MinimizeToTrayCheckBox.IsChecked = _settings.MinimizeToTray;
-        }
-
-        private void SaveButton_Click(object sender, RoutedEventArgs e)
-        {
-            _settings.StartWithWindows = StartWithWindowsCheckBox.IsChecked ?? false;
-            _settings.MinimizeToTray = MinimizeToTrayCheckBox.IsChecked ?? false;
-
-            _settings.Save();
-            UpdateStartupRegistry();
-            DialogResult = true;
-            Close();
-        }
-
-        private void CancelButton_Click(object sender, RoutedEventArgs e)
-        {
-            DialogResult = false;
-            Close();
-        }
-
-        private void UpdateStartupRegistry()
-        {
-            const string applicationName = "NarratorHotkey";
-            var registryKey = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true);
-            
-            if (_settings.StartWithWindows)
+            if (voice.Enabled)
             {
-                string exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
-                registryKey?.SetValue(applicationName, exePath);
-            }
-            else
-            {
-                registryKey?.DeleteValue(applicationName, false);
+                VoiceComboBox.Items.Add(voice.VoiceInfo.Name);
             }
         }
+
+        // Select the current voice
+        VoiceComboBox.SelectedItem = _settings.SelectedVoice;
+    }
+
+    private void LoadSettings()
+    {
+        SpeechRateSlider.Value = _settings.SpeechRate;
+    }
+
+    private void SaveButton_Click(object sender, RoutedEventArgs e)
+    {
+        SaveSettings();
+        _shouldSaveSettings = true;
+        Close();
+    }
+
+    private void SaveSettings()
+    {
+        _settings.SelectedVoice = VoiceComboBox.SelectedItem?.ToString() ?? "Microsoft James";
+        _settings.SpeechRate = (int)SpeechRateSlider.Value;
+        _settings.Save();
+    }
+
+    private void TestVoice_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedVoice = VoiceComboBox.SelectedItem?.ToString();
+        if (string.IsNullOrEmpty(selectedVoice))
+        {
+            MessageBox.Show("Please select a voice first.", "No Voice Selected", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            using var synth = new SpeechSynthesizer();
+            synth.SetOutputToDefaultAudioDevice();
+            synth.SelectVoice(selectedVoice);
+            synth.Rate = (int)SpeechRateSlider.Value;
+            synth.Speak("This is a test of the selected voice and speech rate."); // Changed to Speak from SpeakAsync
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Error testing voice: {ex.Message}", "Voice Test Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void CancelButton_Click(object sender, RoutedEventArgs e)
+    {
+        Close();
+    }
+
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        base.OnClosing(e);
+        DialogResult = _shouldSaveSettings;
     }
 }

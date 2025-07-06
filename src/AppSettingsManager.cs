@@ -12,8 +12,9 @@ public class AppSettings
         "settings.json"
     );
 
-    public bool StartWithWindows { get; set; }
-    public bool MinimizeToTray { get; set; } = true;
+    public string SelectedVoice { get; set; } = "Microsoft David Desktop"; // Default voice
+    public int SpeechRate { get; set; } = 6; // Default rate
+
 
     public void Save()
     {
