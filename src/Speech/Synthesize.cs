@@ -41,10 +41,6 @@ public class Synthesize
     
     public static void ReadText(string text)
     {
-        using var synthesizer = new SpeechSynthesizer();
-        synthesizer.SetOutputToDefaultAudioDevice();
-        synthesizer.SelectVoice("Microsoft James");
-        synthesizer.Rate = 6;
-        synthesizer.Speak(text); // Use Speak instead of SpeakAsync
+        SpeechManager.Instance.Speak(text);
     }
 }

@@ -1,7 +1,7 @@
-using System;
-
 namespace NarratorHotkey;
 
+using System;
+using NarratorHotkey.Speech;
 using System.Speech.Synthesis;
 using System.Windows;
 
@@ -16,6 +16,24 @@ public partial class Settings
         _settings = AppSettings.Load();
         LoadSettings();
         LoadVoices();
+
+        // Add real-time update handlers
+        VoiceComboBox.SelectionChanged += SettingChanged;
+        SpeechRateSlider.ValueChanged += SettingChanged;
+    }
+
+    private void SettingChanged(object sender, EventArgs e)
+    {
+        SaveSettings();
+        SpeechManager.Instance.ApplySettings();
+    }
+
+    private void TestVoice_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedVoice = VoiceComboBox.SelectedItem?.ToString();
+        if (string.IsNullOrEmpty(selectedVoice)) return;
+
+        SpeechManager.Instance.Speak("This is a test of the selected voice and speech rate.");
     }
 
     private void LoadVoices()
@@ -50,29 +68,6 @@ public partial class Settings
         _settings.SelectedVoice = VoiceComboBox.SelectedItem?.ToString() ?? "Microsoft James";
         _settings.SpeechRate = (int)SpeechRateSlider.Value;
         _settings.Save();
-    }
-
-    private void TestVoice_Click(object sender, RoutedEventArgs e)
-    {
-        var selectedVoice = VoiceComboBox.SelectedItem?.ToString();
-        if (string.IsNullOrEmpty(selectedVoice))
-        {
-            MessageBox.Show("Please select a voice first.", "No Voice Selected", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        try
-        {
-            using var synth = new SpeechSynthesizer();
-            synth.SetOutputToDefaultAudioDevice();
-            synth.SelectVoice(selectedVoice);
-            synth.Rate = (int)SpeechRateSlider.Value;
-            synth.Speak("This is a test of the selected voice and speech rate."); // Changed to Speak from SpeakAsync
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Error testing voice: {ex.Message}", "Voice Test Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)

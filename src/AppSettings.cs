@@ -35,4 +35,17 @@ public class AppSettings
         return JsonSerializer.Deserialize<AppSettings>(jsonString) ?? new AppSettings();
 
     }
+    public void Reload()
+    {
+        if (File.Exists(SettingsPath))
+        {
+            var jsonString = File.ReadAllText(SettingsPath);
+            var newSettings = JsonSerializer.Deserialize<AppSettings>(jsonString);
+            if (newSettings != null)
+            {
+                this.SelectedVoice = newSettings.SelectedVoice;
+                this.SpeechRate = newSettings.SpeechRate;
+            }
+        }
+    }
 }
