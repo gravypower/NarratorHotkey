@@ -38,9 +38,4 @@ public class Synthesize
             }
         }
     }
-    
-    public static void ReadText(string text)
-    {
-        SpeechManager.Instance.Speak(text);
-    }
 }

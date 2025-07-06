@@ -6,10 +6,8 @@
         xmlns:local="clr-namespace:NarratorHotkey"
         mc:Ignorable="d"
         ShowInTaskbar="False"
-        Visibility="Hidden"
-        WindowStyle="ToolWindow"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
-
-    </Grid>
+        ShowActivated="False"
+        WindowState="Minimized"
+        WindowStyle="None"
+        Width="0" Height="0">
 </Window>

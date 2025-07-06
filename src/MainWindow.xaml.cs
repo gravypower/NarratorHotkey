@@ -1,78 +1,47 @@
-﻿using System.Reflection;
-using System.Windows;
-using System.Windows.Forms;
-using NarratorHotkey.Speech;
-using Application = System.Windows.Application;
+﻿namespace NarratorHotkey;
 
-namespace NarratorHotkey;
+using System;
+using System.Windows;
+using System.Windows.Interop;
+using Speech;
+
+
 
 public partial class MainWindow
 {
-    private NotifyIcon trayIcon;
-
+    private HotkeyManager _hotkeyManager;
+        
     public MainWindow()
     {
-
-        var s = new Synthesize();
-        
-        const string startupMessage = "Application started. Press Control and 2 to read selected text.";
-        Synthesize.ReadText(startupMessage);
         InitializeComponent();
-        InitializeTrayIcon();
     }
 
-    private void InitializeTrayIcon()
+    protected override void OnSourceInitialized(EventArgs e)
     {
-        trayIcon = new NotifyIcon()
-        {
-            Icon = System.Drawing.Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location),
-            Visible = true
-        };
-
-        // Create context menu
-        var contextMenu = new ContextMenuStrip();
-        contextMenu.Items.Add("Settings", null, (s, e) => ShowSettings());
-        contextMenu.Items.Add("Update Voice Registry", null, (s, e) => VoiceInstallerHelper.RunVoiceInstaller());
-        contextMenu.Items.Add("Exit", null, (s, e) => 
-            { Application.Current.Shutdown(); });
-        
-        trayIcon.ContextMenuStrip = contextMenu;
-
-        // Handle double click on tray icon
-        trayIcon.DoubleClick += (s, e) => 
-        {
-            Show();
-            WindowState = WindowState.Normal;
-        };
-
-        // Handle window state changes
-        StateChanged += (s, e) =>
-        {
-            if (WindowState == WindowState.Minimized)
-            {
-                Hide();
-            }
-        };
-
-        // Clean up tray icon when application closes
-        Closed += (s, e) =>
-        {
-            trayIcon.Dispose();
-        };
+        base.OnSourceInitialized(e);
+        var source = PresentationSource.FromVisual(this) as HwndSource;
+        source?.AddHook(WndProc);
+            
+        // Initialize hotkey manager after window handle is created
+        _hotkeyManager = new HotkeyManager(new WindowInteropHelper(this).Handle);
     }
-    
-    private void ShowSettings()
+
+    private static IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        var settingsWindow = new Settings();
-        var result = settingsWindow.ShowDialog();
-        
-        if (result == true)
+        if (msg != Interoperability.WM_HOTKEY) return IntPtr.Zero;
+            
+        var selectedText = HotkeyManager.GetSelectedText();
+        if (!string.IsNullOrWhiteSpace(selectedText))
         {
-            // Settings were saved, reload them
-            var settings = AppSettings.Load();
-            // Apply any immediate settings changes here if needed
+            SpeechManager.Instance.Speak(selectedText);
         }
+        handled = true;
+        return IntPtr.Zero;
     }
 
-
+    protected override void OnClosed(EventArgs e)
+    {
+        _hotkeyManager?.UnregisterHotKey();
+        base.OnClosed(e);
+    }
 }
