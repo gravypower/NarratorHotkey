@@ -37,6 +37,10 @@ public partial class MainWindow
             {
                 SpeechManager.Instance.Speak(selectedText);
             }
+            else
+            {
+                SpeechManager.Instance.Speak("No text selected.");
+            }
             handled = true;
         }
         return IntPtr.Zero;

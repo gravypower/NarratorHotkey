@@ -49,17 +49,57 @@ public class HotkeyManager
 
         if (hWnd != IntPtr.Zero)
         {
-            // Set the window to the foreground
-            SetForegroundWindow(hWnd);
+            try
+            {
+                // Set the window to the foreground
+                SetForegroundWindow(hWnd);
 
-            // Send the WM_COPY message
-            SendMessage(hWnd, WM_COPY, 0, 0);
+                // Give the window focus
+                Thread.Sleep(100);
 
-            // Wait briefly to ensure clipboard is updated
-            Thread.Sleep(100);
+                // Clear clipboard first
+                System.Windows.Forms.Clipboard.Clear();
+                Thread.Sleep(100);
 
-            // Retrieve text from clipboard
-            return Clipboard.GetText();
+                // Send WM_COPY message to the window (more reliable than simulating keystrokes)
+                SendMessage(hWnd, Interoperability.WM_COPY, 0, 0);
+
+                // If WM_COPY didn't work, try keyboard simulation as fallback
+                Thread.Sleep(200);
+
+                // Simulate Ctrl+C to copy selected text (fallback method)
+                keybd_event(Interoperability.VK_LCONTROL, 0, Interoperability.KEYEVENTF_KEYDOWN, IntPtr.Zero);
+                Thread.Sleep(50);
+                keybd_event(Interoperability.VK_C, 0, Interoperability.KEYEVENTF_KEYDOWN, IntPtr.Zero);
+                Thread.Sleep(50);
+                keybd_event(Interoperability.VK_C, 0, Interoperability.KEYEVENTF_KEYUP, IntPtr.Zero);
+                Thread.Sleep(50);
+                keybd_event(Interoperability.VK_LCONTROL, 0, Interoperability.KEYEVENTF_KEYUP, IntPtr.Zero);
+
+                // Wait for clipboard to be updated
+                Thread.Sleep(200);
+
+                // Retrieve text from clipboard
+                try
+                {
+                    var text = Clipboard.GetText();
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        return text;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to retrieve clipboard text: {ex.Message}");
+                }
+
+                return String.Empty;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting selected text: {ex.Message}");
+                return String.Empty;
+            }
         }
 
         Console.WriteLine("No active window detected.");

@@ -2,6 +2,7 @@
 
 using System;
 using System.Diagnostics;
+using System.Security.Principal;
 using System.Windows;
 using Microsoft.Win32;
  
@@ -12,12 +13,57 @@ public static class VoiceInstallerHelper
 
     private static bool IsInstallingVoices { get; set; }
 
+    private static bool IsRunAsAdministrator()
+    {
+        try
+        {
+            var identity = WindowsIdentity.GetCurrent();
+            var principal = new WindowsPrincipal(identity);
+            return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool CanAccessRegistry(string path)
+    {
+        try
+        {
+            using (var key = Registry.LocalMachine.OpenSubKey(path, true))
+            {
+                return key != null;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public static void RunVoiceInstaller()
     {
         if (IsInstallingVoices)
         {
             MessageBox.Show("Voice installation is already in progress.", "Information",
                 MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        // Check for admin privileges
+        if (!IsRunAsAdministrator())
+        {
+            MessageBox.Show("This feature requires administrator privileges. Please run the application as Administrator.",
+                "Permission Denied", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // Verify registry access
+        if (!CanAccessRegistry(SpeechVoicesTokensPath))
+        {
+            MessageBox.Show("Unable to access the required registry keys. Please ensure you are running as Administrator.",
+                "Registry Access Error", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
 
@@ -97,8 +143,9 @@ public static class VoiceInstallerHelper
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Failed to install voices: {ex.Message}\n\nStack Trace: {ex.StackTrace}", "Error",
+            MessageBox.Show($"Failed to install voices: {ex.Message}", "Error",
                 MessageBoxButton.OK, MessageBoxImage.Error);
+            Debug.WriteLine($"Voice installation error stack trace: {ex.StackTrace}");
         }
         finally
         {

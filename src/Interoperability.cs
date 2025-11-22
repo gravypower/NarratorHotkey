@@ -3,7 +3,8 @@
 using System;
 using System.Runtime.InteropServices;
 
-public static class Interoperability
+public static class 
+    Interoperability
 {
     [DllImport("user32.dll")]
     internal static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -22,31 +23,21 @@ public static class Interoperability
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool UnregisterHotKey(IntPtr hWnd, int id);
-    
 
-    // Define the InputUnion structure
-    [StructLayout(LayoutKind.Explicit)]
-    internal struct InputUnion
-    {
-        [FieldOffset(0)] public KEYBDINPUT ki;
-    }
+    [DllImport("user32.dll")]
+    internal static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, IntPtr dwExtraInfo);
 
-    // Define the KEYBDINPUT structure
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct KEYBDINPUT
-    {
-        public ushort wVk; // Virtual Key Code
-        public ushort wScan; // Hardware Scan Code
-        public uint dwFlags; // Flags
-        public uint time; // Timestamp
-        public IntPtr dwExtraInfo; // Additional data
-    }
+    // Virtual key codes
+    internal const byte VK_C = 0x43; // 'C' key
+    internal const byte VK_LCONTROL = 0xA2; // Left Control key
+
+    // Keyboard event flags
+    internal const uint KEYEVENTF_KEYDOWN = 0x0000;
+    internal const uint KEYEVENTF_KEYUP = 0x0002;
 
     // Constants for modifier keys and messages
     internal const uint MOD_CONTROL = 0x0002;
     internal const int WM_HOTKEY = 0x0312;
-
-    // Virtual key codes
     internal const uint VK_2 = 0x32; // '2' key
     
 
