@@ -14,6 +14,8 @@ public class AppSettings
 
     public string SelectedVoice { get; set; } = "Microsoft David Desktop"; // Default voice
     public int SpeechRate { get; set; } = 6; // Default rate
+    public string TTSProvider { get; set; } = "Windows"; // "Windows" or "Piper"
+    public string PiperVoice { get; set; } = "en_US-lessac-medium"; // Default Piper voice
 
 
     public void Save()
@@ -45,6 +47,8 @@ public class AppSettings
             {
                 this.SelectedVoice = newSettings.SelectedVoice;
                 this.SpeechRate = newSettings.SpeechRate;
+                this.TTSProvider = newSettings.TTSProvider;
+                this.PiperVoice = newSettings.PiperVoice;
             }
         }
     }

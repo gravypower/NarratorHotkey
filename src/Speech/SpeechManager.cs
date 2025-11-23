@@ -1,23 +1,26 @@
 using System;
-using System.Linq;
-using System.Speech.Synthesis;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace NarratorHotkey.Speech
 {
     public class SpeechManager
     {
-        private const int MaxTextLength = 5000;
         private static SpeechManager _instance;
-        private readonly SpeechSynthesizer _synthesizer;
         private readonly AppSettings _settings;
+        private ITTSProvider _currentProvider;
+        private Dictionary<string, ITTSProvider> _providers;
 
         public static SpeechManager Instance => _instance ??= new SpeechManager();
+        public ITTSProvider CurrentProvider => _currentProvider;
 
         private SpeechManager()
         {
-            _synthesizer = new SpeechSynthesizer();
-            _synthesizer.SetOutputToDefaultAudioDevice();
             _settings = AppSettings.Load();
+            _providers = new Dictionary<string, ITTSProvider>();
+
+            // Initialize providers
+            InitializeProviders();
 
             try
             {
@@ -29,57 +32,86 @@ namespace NarratorHotkey.Speech
             }
         }
 
+        private void InitializeProviders()
+        {
+            _providers["Windows"] = new WindowsTTSProvider(_settings);
+            _providers["Piper"] = new PiperTTSProvider(_settings);
+        }
 
         public void ApplySettings()
         {
             _settings.Reload();
 
-            var installedVoices = _synthesizer.GetInstalledVoices();
-            if (installedVoices.Count == 0)
+            // Select the appropriate provider
+            string providerName = _settings.TTSProvider ?? "Windows";
+            if (!_providers.ContainsKey(providerName))
             {
-                Console.WriteLine("No voices installed on the system.");
-                return;
+                Console.WriteLine($"Provider '{providerName}' not found. Falling back to Windows TTS.");
+                providerName = "Windows";
             }
 
-            // Try to select the configured voice
-            try
+            _currentProvider = _providers[providerName];
+            _currentProvider.SetRate(_settings.SpeechRate);
+
+            // Select the appropriate voice
+            if (providerName == "Windows")
             {
-                _synthesizer.SelectVoice(_settings.SelectedVoice);
+                _currentProvider.SelectVoiceAsync(_settings.SelectedVoice).Wait();
             }
-            catch (ArgumentException)
+            else if (providerName == "Piper")
             {
-                // Voice doesn't exist or was uninstalled, fallback to first available
-                try
-                {
-                    _synthesizer.SelectVoice(installedVoices[0].VoiceInfo.Name);
-                    Console.WriteLine($"Selected voice fallback: {installedVoices[0].VoiceInfo.Name}");
-                }
-                catch (ArgumentException ex)
-                {
-                    Console.WriteLine($"Failed to select fallback voice: {ex.Message}");
-                }
+                _currentProvider.SelectVoiceAsync(_settings.PiperVoice).Wait();
             }
 
-            _synthesizer.Rate = _settings.SpeechRate;
+            Console.WriteLine($"Using TTS Provider: {_currentProvider.GetProviderName()}");
         }
-        
+
         public void Speak(string text)
         {
-            if (_synthesizer.State == SynthesizerState.Speaking)
-            {
-                _synthesizer.SpeakAsyncCancelAll();
+            if (string.IsNullOrWhiteSpace(text))
                 return;
-            }
 
-            if (!string.IsNullOrWhiteSpace(text))
+            // Use fire-and-forget pattern for sync context
+            _ = _currentProvider.SpeakAsync(text);
+        }
+
+        public async Task SpeakAsync(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return;
+
+            await _currentProvider.SpeakAsync(text);
+        }
+
+        public async Task StopAsync()
+        {
+            await _currentProvider.StopAsync();
+        }
+
+        public async Task<string[]> GetAvailableVoicesAsync()
+        {
+            return await _currentProvider.GetAvailableVoicesAsync();
+        }
+
+        public async Task<string[]> GetVoicesForProviderAsync(string providerName)
+        {
+            if (_providers.ContainsKey(providerName))
             {
-                // Truncate text if it exceeds maximum length
-                var textToSpeak = text.Length > MaxTextLength
-                    ? text.Substring(0, MaxTextLength)
-                    : text;
-
-                _synthesizer.SpeakAsync(textToSpeak);
+                return await _providers[providerName].GetAvailableVoicesAsync();
             }
+            return new string[] { };
+        }
+
+        public ITTSProvider GetProviderByName(string name)
+        {
+            if (_providers.ContainsKey(name))
+                return _providers[name];
+            return null;
+        }
+
+        public string GetCurrentProvider()
+        {
+            return _currentProvider?.GetProviderName() ?? "Unknown";
         }
     }
 }

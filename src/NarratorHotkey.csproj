@@ -9,6 +9,7 @@
 
     <ItemGroup>
       <PackageReference Include="System.Speech" Version="9.0.6" />
+      <PackageReference Include="PiperSharp" Version="1.0.6" />
     </ItemGroup>
 
 </Project>
