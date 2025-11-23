@@ -176,6 +176,7 @@ namespace NarratorHotkey.Speech
 
                 // Create a new PiperProvider with the model configured
                 var piperWorkingDir = Path.Combine(_piperDir, "piper");
+                ReportProgress($"Using speaking rate: {_currentRate}");
                 var piperProvider = new PiperProvider(new PiperConfiguration
                 {
                     ExecutableLocation = _piperExePath,
@@ -250,10 +251,12 @@ namespace NarratorHotkey.Speech
 
         public void SetRate(int rate)
         {
-            // Piper doesn't have built-in rate control like Windows TTS
-            // Convert -10 to 10 range to 0.5 to 2.0 speed multiplier
-            _currentRate = 1.0f + (rate / 20.0f);
+            // Piper uses length_scale: lower = faster, higher = slower
+            // Convert UI range -10 to 10 to 0.5 to 2.0 length scale
+            // -10 (slower) -> 1.5, 0 (normal) -> 1.0, 10 (faster) -> 0.5
+            _currentRate = 1.0f - (rate / 20.0f);
             _currentRate = Math.Max(0.5f, Math.Min(2.0f, _currentRate));
+            ReportProgress($"Speech rate set to {rate} (length scale: {_currentRate})");
         }
 
         public string GetProviderName() => "Piper TTS";
