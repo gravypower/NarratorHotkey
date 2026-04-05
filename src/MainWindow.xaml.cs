@@ -1,4 +1,4 @@
-﻿namespace NarratorHotkey;
+namespace NarratorHotkey;
 
 using System;
 using System.Windows;
@@ -16,30 +16,42 @@ public partial class MainWindow
         InitializeComponent();
     }
 
-    protected override void OnSourceInitialized(EventArgs e)
+    public void InitializeHidden()
     {
-        base.OnSourceInitialized(e);
-        var source = PresentationSource.FromVisual(this) as HwndSource;
+        var helper = new WindowInteropHelper(this);
+        helper.EnsureHandle();
+        
+        HwndSource source = HwndSource.FromHwnd(helper.Handle);
         source?.AddHook(WndProc);
             
         // Initialize hotkey manager after window handle is created
-        _hotkeyManager = new HotkeyManager(new WindowInteropHelper(this).Handle);
+        _hotkeyManager = new HotkeyManager(helper.Handle);
+    }
+
+    public void ReloadHotkey()
+    {
+        _hotkeyManager?.ReloadHotKey();
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (msg == Interoperability.WM_HOTKEY)
         {
-            // If synthesizer is speaking, the Speak method will stop it
-            // If it's not speaking, it will read the selected text
-            var selectedText = HotkeyManager.GetSelectedText();
-            if (!string.IsNullOrWhiteSpace(selectedText))
+            if (SpeechManager.Instance.IsSpeaking)
             {
-                SpeechManager.Instance.Speak(selectedText);
+                SpeechManager.Instance.StopAsync();
             }
             else
             {
-                SpeechManager.Instance.Speak("No text selected.");
+                var selectedText = HotkeyManager.GetSelectedText();
+                if (!string.IsNullOrWhiteSpace(selectedText))
+                {
+                    SpeechManager.Instance.Speak(selectedText);
+                }
+                else
+                {
+                    SpeechManager.Instance.Speak("No text selected.");
+                }
             }
             handled = true;
         }

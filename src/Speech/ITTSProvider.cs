@@ -8,6 +8,11 @@ namespace NarratorHotkey.Speech
     public interface ITTSProvider
     {
         /// <summary>
+        /// Gets whether the provider is currently speaking.
+        /// </summary>
+        bool IsSpeaking { get; }
+
+        /// <summary>
         /// Speaks the given text.
         /// </summary>
         Task SpeakAsync(string text);

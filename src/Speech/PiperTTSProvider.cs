@@ -21,8 +21,12 @@ namespace NarratorHotkey.Speech
         private float _currentRate = 1.0f;
         private bool _isInitialized = false;
         private bool _isSpeaking = false;
+        private System.Media.SoundPlayer _currentPlayer;
+        private System.Threading.CancellationTokenSource _playTokenSource;
         private readonly List<string> _availableVoiceNames = [];
         private readonly WindowsTTSProvider _windowsFallback;
+
+        public bool IsSpeaking => _isSpeaking;
 
         // Progress reporting
         public event Action<string> ProgressChanged;
@@ -148,11 +152,13 @@ namespace NarratorHotkey.Speech
             if (string.IsNullOrWhiteSpace(text))
                 return;
 
+            _isSpeaking = true;
+
             try
             {
                 await EnsureInitializedAsync();
 
-                _isSpeaking = true;
+                if (!_isSpeaking) return; // user cancelled during initialization
 
                 // Load or download the voice model from cache
                 dynamic voiceModel = null;
@@ -185,11 +191,41 @@ namespace NarratorHotkey.Speech
                     SpeakingRate = _currentRate
                 });
 
-                // Synthesize speech
-                var audioData = await piperProvider.InferAsync(text, AudioOutputType.Wav);
+                if (!_settings.EnableProgressiveChunking)
+                {
+                    // Synthesize speech
+                    var audioData = await piperProvider.InferAsync(text, AudioOutputType.Wav);
 
-                // Play audio from byte array
-                PlayAudio(audioData);
+                    if (!_isSpeaking) return; // Were we stopped during inference?
+
+                    // Play audio from byte array asynchronously
+                    await PlayAudioAsync(audioData);
+                }
+                else
+                {
+                    var chunks = ChunkText(text);
+                    if (chunks.Count == 0) return;
+
+                    Task<byte[]> nextInferenceTask = piperProvider.InferAsync(chunks[0], AudioOutputType.Wav);
+
+                    for (int i = 0; i < chunks.Count; i++)
+                    {
+                        if (!_isSpeaking) break;
+
+                        var audioData = await nextInferenceTask;
+
+                        if (!_isSpeaking) break;
+
+                        if (i + 1 < chunks.Count)
+                        {
+                            // Start inferring the next chunk in the background
+                            nextInferenceTask = piperProvider.InferAsync(chunks[i + 1], AudioOutputType.Wav);
+                        }
+
+                        // Play current chunk
+                        await PlayAudioAsync(audioData);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -204,6 +240,8 @@ namespace NarratorHotkey.Speech
         public Task StopAsync()
         {
             _isSpeaking = false;
+            _currentPlayer?.Stop();
+            _playTokenSource?.Cancel();
             return Task.CompletedTask;
         }
 
@@ -375,23 +413,108 @@ namespace NarratorHotkey.Speech
             }
         }
 
-        private void PlayAudio(byte[] audioData)
+        private List<string> ChunkText(string text)
+        {
+            var chunks = new List<string>();
+            if (string.IsNullOrWhiteSpace(text)) return chunks;
+
+            // Split by newlines first
+            string[] rawChunks = text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+            
+            foreach (var rawChunk in rawChunks)
+            {
+                // Split by common sentence endings, but keep the punctuation attached to the sentence
+                // using positive lookbehind.
+                // Note: \s+ will swallow spaces after the punctuation, which is fine for TTS.
+                var sentences = System.Text.RegularExpressions.Regex.Split(rawChunk, @"(?<=[.!?])\s+");
+                foreach (var sentence in sentences)
+                {
+                    if (!string.IsNullOrWhiteSpace(sentence))
+                    {
+                        chunks.Add(sentence.Trim());
+                    }
+                }
+            }
+
+            // Combine very short chunks to avoid excessive overhead
+            var mergedChunks = new List<string>();
+            string currentChunk = "";
+            
+            foreach (var chunk in chunks)
+            {
+                // 60 characters is arbitrary; short enough to combine "Hi." "How are you?"
+                if (currentChunk.Length + chunk.Length < 60 && currentChunk.Length > 0)
+                {
+                    currentChunk += " " + chunk;
+                }
+                else
+                {
+                    if (!string.IsNullOrEmpty(currentChunk))
+                    {
+                        mergedChunks.Add(currentChunk);
+                    }
+                    currentChunk = chunk;
+                }
+            }
+            if (!string.IsNullOrEmpty(currentChunk))
+            {
+                mergedChunks.Add(currentChunk);
+            }
+
+            return mergedChunks;
+        }
+
+        private int GetWavDurationMs(byte[] wavData)
         {
             try
             {
-                var tempFile = Path.GetTempFileName();
-                File.WriteAllBytes(tempFile, audioData);
+                if (wavData == null || wavData.Length < 44) return 0;
+                int byteRate = BitConverter.ToInt32(wavData, 28);
+                if (byteRate <= 0) return 3000;
+                return (int)(((wavData.Length - 44) * 1000L) / byteRate);
+            }
+            catch
+            {
+                return 3000;
+            }
+        }
 
-                // Use System.Media.SoundPlayer to play the audio
-                var player = new System.Media.SoundPlayer(tempFile);
-                player.PlaySync();
+        private async Task PlayAudioAsync(byte[] audioData)
+        {
+            try
+            {
+                int durationMs = GetWavDurationMs(audioData);
 
-                // Clean up
-                File.Delete(tempFile);
+                // Use MemoryStream to avoid disk I/O and locking issues
+                using var ms = new MemoryStream(audioData);
+                _currentPlayer = new System.Media.SoundPlayer(ms);
+                
+                if (_isSpeaking)
+                {
+                    _currentPlayer.Play(); // Play asynchronously, no task blocking
+                }
+
+                _playTokenSource = new System.Threading.CancellationTokenSource();
+                try
+                {
+                    // Delay logically until the sound completes, plus a tiny margin
+                    await Task.Delay(durationMs + 100, _playTokenSource.Token);
+                }
+                catch (TaskCanceledException)
+                {
+                    // Cancelled by hotkey StopAsync()
+                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to play audio: {ex.Message}");
+            }
+            finally
+            {
+                _currentPlayer?.Dispose();
+                _currentPlayer = null;
+                _playTokenSource?.Dispose();
+                _playTokenSource = null;
             }
         }
     }

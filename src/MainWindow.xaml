@@ -1,4 +1,4 @@
-﻿<Window x:Class="NarratorHotkey.MainWindow"
+<Window x:Class="NarratorHotkey.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -7,7 +7,9 @@
         mc:Ignorable="d"
         ShowInTaskbar="False"
         ShowActivated="False"
-        WindowState="Minimized"
+        Visibility="Hidden"
         WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
         Width="0" Height="0">
 </Window>

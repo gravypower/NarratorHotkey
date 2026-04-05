@@ -13,6 +13,7 @@ namespace NarratorHotkey.Speech
 
         public static SpeechManager Instance => _instance ??= new SpeechManager();
         public ITTSProvider CurrentProvider => _currentProvider;
+        public bool IsSpeaking => _currentProvider?.IsSpeaking ?? false;
 
         private SpeechManager()
         {

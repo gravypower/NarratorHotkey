@@ -4,6 +4,8 @@ using System;
 using System.Windows.Forms;
 using static Interoperability;
 using System.Threading;
+using System.Windows.Automation;
+using System.Windows.Automation.Text;
 
 public class HotkeyManager
 {
@@ -17,17 +19,21 @@ public class HotkeyManager
         RegisterHotKey();
     }
 
-    private void RegisterHotKey()
+    public void RegisterHotKey()
     {
+        var settings = AppSettings.Load();
+        uint modifier = Interoperability.GetModifierCode(settings.HotkeyModifier);
+        uint key = Interoperability.GetKeyCode(settings.HotkeyKey);
+
         _isRegistered = Interoperability.RegisterHotKey(
             _windowHandle,
             HOTKEY_ID,
-            MOD_CONTROL,
-            VK_2);
+            modifier,
+            key);
 
         if (!_isRegistered)
         {
-            MessageBox.Show("Could not register the hotkey (Ctrl+2).",
+            MessageBox.Show($"Could not register the hotkey ({settings.HotkeyModifier}+{settings.HotkeyKey}).",
                 "Hotkey Registration Error",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -42,6 +48,12 @@ public class HotkeyManager
         _isRegistered = false;
     }
 
+    public void ReloadHotKey()
+    {
+        UnregisterHotKey();
+        RegisterHotKey();
+    }
+
     public static string GetSelectedText()
     {
         // Get the handle of the currently active window
@@ -51,14 +63,38 @@ public class HotkeyManager
         {
             try
             {
+                // Method 1: Try UI Automation first (non-destructive)
+                string uiaText = GetTextViaUIAutomation();
+                if (!string.IsNullOrEmpty(uiaText))
+                {
+                    return uiaText;
+                }
+
+                // Method 2: Fallback to non-destructive clipboard approach
+                Console.WriteLine("UI Automation didn't return text. Falling back to clipboard.");
+                
                 // Set the window to the foreground
                 SetForegroundWindow(hWnd);
 
                 // Give the window focus
                 Thread.Sleep(100);
 
+                // **Backup the current clipboard state**
+                IDataObject backupClipboard = null;
+                try
+                {
+                    if (Clipboard.ContainsText() || Clipboard.ContainsImage() || Clipboard.ContainsAudio() || Clipboard.ContainsFileDropList())
+                    {
+                         backupClipboard = Clipboard.GetDataObject();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Could not backup clipboard: {ex.Message}");
+                }
+
                 // Clear clipboard first
-                System.Windows.Forms.Clipboard.Clear();
+                Clipboard.Clear();
                 Thread.Sleep(100);
 
                 // Send WM_COPY message to the window (more reliable than simulating keystrokes)
@@ -79,13 +115,18 @@ public class HotkeyManager
                 // Wait for clipboard to be updated
                 Thread.Sleep(200);
 
+                string selectedText = string.Empty;
+
                 // Retrieve text from clipboard
                 try
                 {
-                    var text = Clipboard.GetText();
-                    if (!string.IsNullOrEmpty(text))
+                    if (Clipboard.ContainsText())
                     {
-                        return text;
+                        var text = Clipboard.GetText();
+                        if (!string.IsNullOrEmpty(text))
+                        {
+                            selectedText = text;
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -93,7 +134,24 @@ public class HotkeyManager
                     Console.WriteLine($"Failed to retrieve clipboard text: {ex.Message}");
                 }
 
-                return String.Empty;
+                // **Restore the previous clipboard state**
+                try
+                {
+                    if (backupClipboard != null)
+                    {
+                        Clipboard.SetDataObject(backupClipboard, true, 5, 100);
+                    }
+                    else
+                    {
+                        Clipboard.Clear();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to restore clipboard backup: {ex.Message}");
+                }
+
+                return selectedText;
             }
             catch (Exception ex)
             {
@@ -105,5 +163,35 @@ public class HotkeyManager
         Console.WriteLine("No active window detected.");
 
         return String.Empty;
+    }
+
+    private static string GetTextViaUIAutomation()
+    {
+        try
+        {
+            AutomationElement focusedElement = AutomationElement.FocusedElement;
+            if (focusedElement != null)
+            {
+                object patternObj;
+                if (focusedElement.TryGetCurrentPattern(TextPattern.Pattern, out patternObj))
+                {
+                    TextPattern textPattern = (TextPattern)patternObj;
+                    TextPatternRange[] textSelection = textPattern.GetSelection();
+                    if (textSelection.Length > 0)
+                    {
+                        string selectedText = textSelection[0].GetText(-1);
+                        if (!string.IsNullOrEmpty(selectedText))
+                        {
+                            return selectedText;
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"UI Automation failed: {ex.Message}");
+        }
+        return string.Empty;
     }
 }

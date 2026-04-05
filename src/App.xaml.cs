@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 
 namespace NarratorHotkey
 {
@@ -10,7 +10,12 @@ namespace NarratorHotkey
         {
             base.OnStartup(e);
             
+            // Set ShutdownMode to explicit because we don't have a visible main window
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
             MainWindow = new MainWindow();
+            ((MainWindow)MainWindow).InitializeHidden();
+
             // Create the tray application
             _trayApp = new TrayApplication();
         }

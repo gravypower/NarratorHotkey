@@ -39,6 +39,21 @@ public partial class Settings
         ProviderComboBox.Items.Add("Windows");
         ProviderComboBox.Items.Add("Piper");
         ProviderComboBox.SelectedItem = _settings.TTSProvider;
+
+        // Initialize Hotkey Modifiers
+        HotkeyModifierComboBox.Items.Add("Control");
+        HotkeyModifierComboBox.Items.Add("Alt");
+        HotkeyModifierComboBox.Items.Add("Shift");
+        HotkeyModifierComboBox.Items.Add("None");
+        HotkeyModifierComboBox.SelectedItem = _settings.HotkeyModifier;
+
+        // Initialize Hotkey Keys
+        string[] commonKeys = { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12" };
+        foreach (var key in commonKeys)
+        {
+            HotkeyKeyComboBox.Items.Add(key);
+        }
+        HotkeyKeyComboBox.SelectedItem = _settings.HotkeyKey;
     }
 
     private void SettingChanged(object sender, EventArgs e)
@@ -101,6 +116,9 @@ public partial class Settings
     {
         var selectedVoice = VoiceComboBox.SelectedItem?.ToString();
         if (string.IsNullOrEmpty(selectedVoice)) return;
+
+        SaveSettings();
+        SpeechManager.Instance.ApplySettings();
 
         SpeechManager.Instance.Speak("This is a test of the selected voice and speech rate.");
     }
@@ -234,12 +252,20 @@ public partial class Settings
     private void LoadSettings()
     {
         SpeechRateSlider.Value = _settings.SpeechRate;
+        ProgressiveChunkingCheckBox.IsChecked = _settings.EnableProgressiveChunking;
     }
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)
     {
         SaveSettings();
         SpeechManager.Instance.ApplySettings();
+
+        // Inform MainWindow to reload hotkeys if it's currently running
+        if (Application.Current.MainWindow is MainWindow mainWindow)
+        {
+            mainWindow.ReloadHotkey();
+        }
+
         _shouldSaveSettings = true;
         Close();
     }
@@ -248,6 +274,11 @@ public partial class Settings
     {
         _settings.TTSProvider = ProviderComboBox.SelectedItem?.ToString() ?? "Windows";
         _settings.SpeechRate = (int)SpeechRateSlider.Value;
+        
+        // Update Hotkey settings
+        _settings.HotkeyModifier = HotkeyModifierComboBox.SelectedItem?.ToString() ?? "Control";
+        _settings.HotkeyKey = HotkeyKeyComboBox.SelectedItem?.ToString() ?? "2";
+        _settings.EnableProgressiveChunking = ProgressiveChunkingCheckBox.IsChecked ?? true;
 
         string selectedProvider = _settings.TTSProvider;
         string selectedVoice = VoiceComboBox.SelectedItem?.ToString();

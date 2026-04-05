@@ -16,6 +16,9 @@ public class AppSettings
     public int SpeechRate { get; set; } = 6; // Default rate
     public string TTSProvider { get; set; } = "Windows"; // "Windows" or "Piper"
     public string PiperVoice { get; set; } = "en_US-lessac-medium"; // Default Piper voice
+    public string HotkeyModifier { get; set; } = "Control"; // "Control", "Alt", "Shift", "None"
+    public string HotkeyKey { get; set; } = "2"; // Default key
+    public bool EnableProgressiveChunking { get; set; } = true;
 
 
     public void Save()
@@ -49,6 +52,9 @@ public class AppSettings
                 this.SpeechRate = newSettings.SpeechRate;
                 this.TTSProvider = newSettings.TTSProvider;
                 this.PiperVoice = newSettings.PiperVoice;
+                this.HotkeyModifier = newSettings.HotkeyModifier;
+                this.HotkeyKey = newSettings.HotkeyKey;
+                this.EnableProgressiveChunking = newSettings.EnableProgressiveChunking;
             }
         }
     }

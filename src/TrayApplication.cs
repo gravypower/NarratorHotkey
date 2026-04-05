@@ -34,7 +34,9 @@ public class TrayApplication : Component
             try
             {
                 await Task.Delay(500); // Let UI settle
-                const string startupMessage = "Application started. Press Control and 2 to read selected text.";
+                var settings = AppSettings.Load();
+                var mod = settings.HotkeyModifier == "None" ? "" : $"{settings.HotkeyModifier} and ";
+                string startupMessage = $"Application started. Press {mod}{settings.HotkeyKey} to read selected text.";
                 await SpeechManager.Instance.SpeakAsync(startupMessage);
             }
             catch (Exception ex)

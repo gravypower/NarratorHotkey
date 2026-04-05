@@ -21,6 +21,8 @@ namespace NarratorHotkey.Speech
             _synthesizer.SetOutputToDefaultAudioDevice();
         }
 
+        public bool IsSpeaking => _synthesizer.State == SynthesizerState.Speaking;
+
         public Task SpeakAsync(string text)
         {
             return Task.Run(() =>
@@ -28,7 +30,6 @@ namespace NarratorHotkey.Speech
                 if (_synthesizer.State == SynthesizerState.Speaking)
                 {
                     _synthesizer.SpeakAsyncCancelAll();
-                    return;
                 }
 
                 if (!string.IsNullOrWhiteSpace(text))

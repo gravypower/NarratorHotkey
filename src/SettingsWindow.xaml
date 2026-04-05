@@ -1,7 +1,8 @@
-﻿<Window x:Class="NarratorHotkey.Settings"
+<Window x:Class="NarratorHotkey.Settings"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Settings" Height="450" Width="400"
+        Title="Settings" Width="400"
+        SizeToContent="Height" MinHeight="450"
         WindowStartupLocation="CenterScreen">
     <Grid Margin="10">
         <Grid.RowDefinitions>
@@ -17,6 +18,18 @@
                     <ComboBox x:Name="ProviderComboBox"
                              Margin="0,5"
                              SelectionChanged="ProviderComboBox_SelectionChanged"/>
+                </StackPanel>
+            </GroupBox>
+            <GroupBox Header="Hotkey Settings" Margin="0,10">
+                <StackPanel Margin="5">
+                    <Label Content="Modifier Key:"/>
+                    <ComboBox x:Name="HotkeyModifierComboBox"
+                             Margin="0,5"
+                             SelectionChanged="SettingChanged"/>
+                    <Label Content="Primary Key (0-9, A-Z, F1-F12):"/>
+                    <ComboBox x:Name="HotkeyKeyComboBox"
+                             Margin="0,5"
+                             SelectionChanged="SettingChanged"/>
                 </StackPanel>
             </GroupBox>
 
@@ -36,6 +49,11 @@
                            Margin="0,5"/>
                     <TextBlock Text="{Binding ElementName=SpeechRateSlider, Path=Value, StringFormat=Rate: {0}}"
                                HorizontalAlignment="Center"/>
+                    <CheckBox x:Name="ProgressiveChunkingCheckBox"
+                              Content="Progressive TTS Chunking (Piper Only)"
+                              Margin="0,15,0,5"
+                              Checked="SettingChanged"
+                              Unchecked="SettingChanged"/>
                 </StackPanel>
             </GroupBox>
 

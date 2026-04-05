@@ -36,10 +36,52 @@ public static class
     internal const uint KEYEVENTF_KEYUP = 0x0002;
 
     // Constants for modifier keys and messages
+    internal const uint MOD_NONE = 0x0000;
+    internal const uint MOD_ALT = 0x0001;
     internal const uint MOD_CONTROL = 0x0002;
+    internal const uint MOD_SHIFT = 0x0004;
+    internal const uint MOD_WIN = 0x0008;
+
     internal const int WM_HOTKEY = 0x0312;
     internal const uint VK_2 = 0x32; // '2' key
     
+    public static uint GetModifierCode(string modifier)
+    {
+        return modifier switch
+        {
+            "Control" => MOD_CONTROL,
+            "Alt" => MOD_ALT,
+            "Shift" => MOD_SHIFT,
+            _ => MOD_NONE
+        };
+    }
 
-
+    public static uint GetKeyCode(string key)
+    {
+        if (key.Length == 1)
+        {
+            char c = char.ToUpper(key[0]);
+            if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+            {
+                return (uint)c;
+            }
+        }
+        
+        return key switch
+        {
+            "F1" => 0x70,
+            "F2" => 0x71,
+            "F3" => 0x72,
+            "F4" => 0x73,
+            "F5" => 0x74,
+            "F6" => 0x75,
+            "F7" => 0x76,
+            "F8" => 0x77,
+            "F9" => 0x78,
+            "F10" => 0x79,
+            "F11" => 0x7A,
+            "F12" => 0x7B,
+            _ => VK_2 // Default to '2' if unrecognized
+        };
+    }
 }
