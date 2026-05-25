@@ -26,6 +26,20 @@ namespace NarratorHotkey.Speech
         private readonly List<string> _availableVoiceNames = [];
         private readonly WindowsTTSProvider _windowsFallback;
 
+        private static readonly string[] FallbackPiperVoices = new[]
+        {
+            "en_US-lessac-medium",
+            "en_US-lessac-high",
+            "en_US-amy-medium",
+            "en_US-joe-medium",
+            "en_US-ryan-medium",
+            "en_US-ryan-high",
+            "en_US-hannah-medium",
+            "en_US-ljspeech-medium",
+            "en_GB-alan-medium",
+            "en_GB-jenny_dioco-medium"
+        };
+
         public bool IsSpeaking => _isSpeaking;
 
         // Progress reporting
@@ -253,7 +267,7 @@ namespace NarratorHotkey.Speech
 
                 if (_availableVoiceNames.Count == 0)
                 {
-                    return new[] { "en_US-lessac-medium" }; // Fallback
+                    return FallbackPiperVoices;
                 }
 
                 return _availableVoiceNames.OrderBy(v => v).ToArray();
@@ -261,7 +275,7 @@ namespace NarratorHotkey.Speech
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to get available voices: {ex.Message}");
-                return new[] { "en_US-lessac-medium" }; // Fallback
+                return FallbackPiperVoices;
             }
         }
 
@@ -273,6 +287,14 @@ namespace NarratorHotkey.Speech
 
                 if (_availableVoiceNames.Count == 0 || !_availableVoiceNames.Contains(voiceName))
                 {
+                    // Allow selecting standard English voices if we are running in offline/fallback mode
+                    if (FallbackPiperVoices.Contains(voiceName))
+                    {
+                        _currentVoiceName = voiceName;
+                        Console.WriteLine($"Selected voice from fallback list: {voiceName}");
+                        return;
+                    }
+
                     Console.WriteLine($"Voice model '{voiceName}' not found, using default");
                     _currentVoiceName = "en_US-lessac-medium";
                     return;
@@ -408,7 +430,7 @@ namespace NarratorHotkey.Speech
             }
             catch (Exception ex)
             {
-                AnnounceError($"Failed to download model {voiceName}");
+                AnnounceError($"Failed to download model {voiceName}: {ex.Message}");
                 return null;
             }
         }

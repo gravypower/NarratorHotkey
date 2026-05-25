@@ -1,6 +1,7 @@
 namespace NarratorHotkey;
 
 using System;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
 using Speech;
@@ -37,25 +38,37 @@ public partial class MainWindow
     {
         if (msg == Interoperability.WM_HOTKEY)
         {
-            if (SpeechManager.Instance.IsSpeaking)
-            {
-                SpeechManager.Instance.StopAsync();
-            }
-            else
-            {
-                var selectedText = HotkeyManager.GetSelectedText();
-                if (!string.IsNullOrWhiteSpace(selectedText))
-                {
-                    SpeechManager.Instance.Speak(selectedText);
-                }
-                else
-                {
-                    SpeechManager.Instance.Speak("No text selected.");
-                }
-            }
+            _ = ProcessHotkeyAsync();
             handled = true;
         }
         return IntPtr.Zero;
+    }
+
+    private async Task ProcessHotkeyAsync()
+    {
+        try
+        {
+            if (SpeechManager.Instance.IsSpeaking)
+            {
+                await SpeechManager.Instance.StopAsync();
+            }
+            else
+            {
+                var selectedText = await HotkeyManager.GetSelectedTextAsync();
+                if (!string.IsNullOrWhiteSpace(selectedText))
+                {
+                    await SpeechManager.Instance.SpeakAsync(selectedText);
+                }
+                else
+                {
+                    await SpeechManager.Instance.SpeakAsync("No text selected.");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error processing hotkey: {ex.Message}");
+        }
     }
 
     protected override void OnClosed(EventArgs e)

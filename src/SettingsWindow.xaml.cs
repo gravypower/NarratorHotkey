@@ -60,7 +60,17 @@ public partial class Settings
     {
         if (_isLoading) return;
         SaveSettings();
-        SpeechManager.Instance.ApplySettings();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await SpeechManager.Instance.ApplySettingsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error applying settings in background: {ex.Message}");
+            }
+        });
     }
 
     private void ProviderComboBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -112,15 +122,21 @@ public partial class Settings
         }
     }
 
-    private void TestVoice_Click(object sender, RoutedEventArgs e)
+    private async void TestVoice_Click(object sender, RoutedEventArgs e)
     {
         var selectedVoice = VoiceComboBox.SelectedItem?.ToString();
         if (string.IsNullOrEmpty(selectedVoice)) return;
 
         SaveSettings();
-        SpeechManager.Instance.ApplySettings();
-
-        SpeechManager.Instance.Speak("This is a test of the selected voice and speech rate.");
+        try
+        {
+            await SpeechManager.Instance.ApplySettingsAsync();
+            await SpeechManager.Instance.SpeakAsync("This is a test of the selected voice and speech rate.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error during voice test: {ex.Message}");
+        }
     }
 
     private void LoadVoices()
@@ -179,6 +195,7 @@ public partial class Settings
         // Subscribe to progress events BEFORE starting background task (on UI thread)
         if (piperProvider != null)
         {
+            piperProvider.ProgressChanged -= OnPiperProgress;
             piperProvider.ProgressChanged += OnPiperProgress;
             _currentProvider = piperProvider;
         }
@@ -258,7 +275,18 @@ public partial class Settings
     private void SaveButton_Click(object sender, RoutedEventArgs e)
     {
         SaveSettings();
-        SpeechManager.Instance.ApplySettings();
+        
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await SpeechManager.Instance.ApplySettingsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error applying settings on save: {ex.Message}");
+            }
+        });
 
         // Inform MainWindow to reload hotkeys if it's currently running
         if (Application.Current.MainWindow is MainWindow mainWindow)
@@ -309,5 +337,16 @@ public partial class Settings
     {
         base.OnClosing(e);
         DialogResult = _shouldSaveSettings;
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        var speechManager = SpeechManager.Instance;
+        var piperProvider = speechManager.GetProviderByName("Piper") as PiperTTSProvider;
+        if (piperProvider != null)
+        {
+            piperProvider.ProgressChanged -= OnPiperProgress;
+        }
+        base.OnClosed(e);
     }
 }

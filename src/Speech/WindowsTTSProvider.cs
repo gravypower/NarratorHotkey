@@ -13,42 +13,86 @@ namespace NarratorHotkey.Speech
         private const int MaxTextLength = 5000;
         private readonly SpeechSynthesizer _synthesizer;
         private readonly AppSettings _settings;
+        private readonly System.Collections.Generic.Dictionary<Prompt, TaskCompletionSource<bool>> _pendingPrompts = new();
+        private readonly object _lock = new object();
 
         public WindowsTTSProvider(AppSettings settings)
         {
             _settings = settings;
             _synthesizer = new SpeechSynthesizer();
             _synthesizer.SetOutputToDefaultAudioDevice();
+            _synthesizer.SpeakCompleted += Synthesizer_SpeakCompleted;
         }
 
         public bool IsSpeaking => _synthesizer.State == SynthesizerState.Speaking;
 
-        public Task SpeakAsync(string text)
+        public async Task SpeakAsync(string text)
         {
-            return Task.Run(() =>
+            if (string.IsNullOrWhiteSpace(text))
             {
-                if (_synthesizer.State == SynthesizerState.Speaking)
-                {
-                    _synthesizer.SpeakAsyncCancelAll();
-                }
+                return;
+            }
 
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    var textToSpeak = text.Length > MaxTextLength
-                        ? text.Substring(0, MaxTextLength)
-                        : text;
+            // Cancel any ongoing speech first
+            await StopAsync();
 
-                    _synthesizer.SpeakAsync(textToSpeak);
-                }
-            });
+            var textToSpeak = text.Length > MaxTextLength
+                ? text.Substring(0, MaxTextLength)
+                : text;
+
+            var tcs = new TaskCompletionSource<bool>();
+            Prompt prompt;
+
+            lock (_lock)
+            {
+                prompt = _synthesizer.SpeakAsync(textToSpeak);
+                _pendingPrompts[prompt] = tcs;
+            }
+
+            await tcs.Task;
         }
 
         public Task StopAsync()
         {
-            return Task.Run(() =>
+            lock (_lock)
             {
-                _synthesizer.SpeakAsyncCancelAll();
-            });
+                foreach (var tcs in _pendingPrompts.Values)
+                {
+                    tcs.TrySetCanceled();
+                }
+                _pendingPrompts.Clear();
+            }
+            _synthesizer.SpeakAsyncCancelAll();
+            return Task.CompletedTask;
+        }
+
+        private void Synthesizer_SpeakCompleted(object sender, SpeakCompletedEventArgs e)
+        {
+            TaskCompletionSource<bool> tcs = null;
+
+            lock (_lock)
+            {
+                if (_pendingPrompts.TryGetValue(e.Prompt, out tcs))
+                {
+                    _pendingPrompts.Remove(e.Prompt);
+                }
+            }
+
+            if (tcs != null)
+            {
+                if (e.Error != null)
+                {
+                    tcs.TrySetException(e.Error);
+                }
+                else if (e.Cancelled)
+                {
+                    tcs.TrySetCanceled();
+                }
+                else
+                {
+                    tcs.TrySetResult(true);
+                }
+            }
         }
 
         public Task<string[]> GetAvailableVoicesAsync()

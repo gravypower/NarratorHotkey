@@ -4,6 +4,7 @@ using System;
 using System.Windows.Forms;
 using static Interoperability;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
 
@@ -54,7 +55,40 @@ public class HotkeyManager
         RegisterHotKey();
     }
 
-    public static string GetSelectedText()
+    public static Task<T> RunOnStaThreadAsync<T>(Func<T> func)
+    {
+        var tcs = new TaskCompletionSource<T>();
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                tcs.SetResult(func());
+            }
+            catch (Exception ex)
+            {
+                tcs.SetException(ex);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return tcs.Task;
+    }
+
+    public static async Task<string> GetSelectedTextAsync()
+    {
+        // Try UI Automation first (can run on MTA/background thread safely)
+        string uiaText = await Task.Run(() => GetTextViaUIAutomation());
+        if (!string.IsNullOrEmpty(uiaText))
+        {
+            return uiaText;
+        }
+
+        // Fallback to clipboard approach, run on a dedicated STA thread to avoid blocking the main UI thread
+        Console.WriteLine("UI Automation didn't return text. Falling back to clipboard.");
+        return await RunOnStaThreadAsync(() => GetSelectedTextViaClipboard());
+    }
+
+    private static string GetSelectedTextViaClipboard()
     {
         // Get the handle of the currently active window
         var hWnd = GetForegroundWindow();
@@ -63,16 +97,6 @@ public class HotkeyManager
         {
             try
             {
-                // Method 1: Try UI Automation first (non-destructive)
-                string uiaText = GetTextViaUIAutomation();
-                if (!string.IsNullOrEmpty(uiaText))
-                {
-                    return uiaText;
-                }
-
-                // Method 2: Fallback to non-destructive clipboard approach
-                Console.WriteLine("UI Automation didn't return text. Falling back to clipboard.");
-                
                 // Set the window to the foreground
                 SetForegroundWindow(hWnd);
 
@@ -161,7 +185,6 @@ public class HotkeyManager
         }
 
         Console.WriteLine("No active window detected.");
-
         return String.Empty;
     }
 
