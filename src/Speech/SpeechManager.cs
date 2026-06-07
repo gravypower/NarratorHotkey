@@ -1,12 +1,22 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace NarratorHotkey.Speech
 {
+    public class SpeechLogEntry
+    {
+        public DateTime Timestamp { get; set; }
+        public string OriginalText { get; set; }
+        public string CleanedText { get; set; }
+        public string Provider { get; set; }
+    }
+
     public class SpeechManager
     {
         private static SpeechManager _instance;
@@ -14,9 +24,111 @@ namespace NarratorHotkey.Speech
         private ITTSProvider _currentProvider;
         private Dictionary<string, ITTSProvider> _providers;
 
-        public static SpeechManager Instance => _instance ??= new SpeechManager();
-        public ITTSProvider CurrentProvider => _currentProvider;
-        public bool IsSpeaking => _currentProvider?.IsSpeaking ?? false;
+        private static readonly string LogPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "NarratorHotkey",
+            "speech_log.json"
+        );
+
+        private readonly List<SpeechLogEntry> _speechHistory = new List<SpeechLogEntry>();
+        private readonly object _logLock = new object();
+        private readonly Task _initTask;
+
+        public IReadOnlyList<SpeechLogEntry> SpeechHistory
+        {
+            get
+            {
+                lock (_logLock)
+                {
+                    return _speechHistory.ToArray();
+                }
+            }
+        }
+
+        private static readonly object _instanceLock = new object();
+        public static SpeechManager Instance
+        {
+            get
+            {
+                if (_instance == null)
+                {
+                    lock (_instanceLock)
+                    {
+                        _instance ??= new SpeechManager();
+                    }
+                }
+                return _instance;
+            }
+        }
+
+        public ITTSProvider CurrentProvider => GetActiveProvider();
+        public bool IsSpeaking => GetActiveProvider()?.IsSpeaking ?? false;
+
+        private ITTSProvider GetActiveProvider()
+        {
+            if (_initTask != null && !_initTask.IsCompleted)
+            {
+                try
+                {
+                    // Block briefly to let settings load, max 3 seconds
+                    _initTask.Wait(3000);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error waiting for settings initialization: {ex.Message}");
+                }
+            }
+
+            if (_currentProvider != null)
+            {
+                return _currentProvider;
+            }
+
+#if WINDOWS
+            // Fallback: try to select Windows TTS provider
+            if (_providers != null && _providers.TryGetValue("Windows", out var winProvider))
+            {
+                return winProvider;
+            }
+
+            // Ultimate fallback: instantiate Windows TTS on the fly
+            try
+            {
+                var fallback = new WindowsTTSProvider(_settings ?? AppSettings.Load());
+                return fallback;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ultimate fallback failed to instantiate: {ex.Message}");
+                return null;
+            }
+#else
+            // Linux/cross-platform fallback
+            if (_providers != null)
+            {
+                if (_providers.TryGetValue("Kokoro ONNX", out var kokoro)) return kokoro;
+                if (_providers.TryGetValue("Piper", out var piper)) return piper;
+            }
+            return null;
+#endif
+        }
+
+        private async Task<ITTSProvider> GetActiveProviderAsync()
+        {
+            if (_initTask != null)
+            {
+                try
+                {
+                    await _initTask;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error awaiting settings initialization: {ex.Message}");
+                }
+            }
+
+            return GetActiveProvider();
+        }
 
         private SpeechManager()
         {
@@ -26,8 +138,11 @@ namespace NarratorHotkey.Speech
             // Initialize providers
             InitializeProviders();
 
+            // Load persisted speech log
+            LoadSpeechLog();
+
             // Initialize settings in background thread to avoid blocking UI during startup
-            Task.Run(async () =>
+            _initTask = Task.Run(async () =>
             {
                 try
                 {
@@ -40,9 +155,111 @@ namespace NarratorHotkey.Speech
             });
         }
 
+        private void LoadSpeechLog()
+        {
+            try
+            {
+                if (File.Exists(LogPath))
+                {
+                    string json = File.ReadAllText(LogPath);
+                    if (!string.IsNullOrWhiteSpace(json))
+                    {
+                        var list = JsonSerializer.Deserialize<List<SpeechLogEntry>>(json);
+                        if (list != null)
+                        {
+                            lock (_logLock)
+                            {
+                                _speechHistory.Clear();
+                                foreach (var entry in list)
+                                {
+                                    if (entry != null)
+                                    {
+                                        _speechHistory.Add(entry);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading speech log: {ex.Message}");
+            }
+        }
+
+        private void SaveSpeechLog()
+        {
+            try
+            {
+                string json;
+                lock (_logLock)
+                {
+                    json = JsonSerializer.Serialize(_speechHistory);
+                }
+                string dir = Path.GetDirectoryName(LogPath);
+                if (dir != null && !Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+                File.WriteAllText(LogPath, json);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error saving speech log: {ex.Message}");
+            }
+        }
+
+        public void AddLogEntry(string original, string cleaned, string provider)
+        {
+            if (string.IsNullOrWhiteSpace(original))
+                return;
+
+            lock (_logLock)
+            {
+                _speechHistory.Insert(0, new SpeechLogEntry
+                {
+                    Timestamp = DateTime.Now,
+                    OriginalText = original,
+                    CleanedText = cleaned ?? string.Empty,
+                    Provider = provider ?? "Unknown"
+                });
+
+                // Limit history to 200 entries
+                while (_speechHistory.Count > 200)
+                {
+                    _speechHistory.RemoveAt(_speechHistory.Count - 1);
+                }
+            }
+
+            Task.Run(() => SaveSpeechLog());
+        }
+
+        public void ClearSpeechLog()
+        {
+            lock (_logLock)
+            {
+                _speechHistory.Clear();
+            }
+            try
+            {
+                if (File.Exists(LogPath))
+                {
+                    File.Delete(LogPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error deleting speech log file: {ex.Message}");
+            }
+        }
+
         private void InitializeProviders()
         {
+#if WINDOWS
             _providers["Windows"] = new WindowsTTSProvider(_settings);
+#endif
+            _providers["Kokoro ONNX"] = new KokoroTTSProvider(_settings);
             _providers["Piper"] = new PiperTTSProvider(_settings);
         }
 
@@ -64,19 +281,33 @@ namespace NarratorHotkey.Speech
 
             // Select the appropriate provider
             string providerName = _settings.TTSProvider ?? "Windows";
+#if !WINDOWS
+            if (providerName == "Windows" || !_providers.ContainsKey(providerName))
+            {
+                providerName = "Kokoro ONNX";
+            }
+#else
             if (!_providers.ContainsKey(providerName))
             {
-                Console.WriteLine($"Provider '{providerName}' not found. Falling back to Windows TTS.");
+                Console.WriteLine($"Provider '{providerName}' not found. Falling back to Windows.");
                 providerName = "Windows";
             }
+#endif
 
             _currentProvider = _providers[providerName];
             _currentProvider.SetRate(_settings.SpeechRate);
 
             // Select the appropriate voice
+#if WINDOWS
             if (providerName == "Windows")
             {
                 await _currentProvider.SelectVoiceAsync(_settings.SelectedVoice);
+            }
+            else
+#endif
+            if (providerName == "Kokoro ONNX")
+            {
+                await _currentProvider.SelectVoiceAsync(_settings.KokoroVoice);
             }
             else if (providerName == "Piper")
             {
@@ -84,6 +315,24 @@ namespace NarratorHotkey.Speech
             }
 
             Console.WriteLine($"Using TTS Provider: {_currentProvider.GetProviderName()}");
+        }
+
+        public async Task ApplyTemporarySettingsAsync(string providerName, string voiceName)
+        {
+            if (string.IsNullOrEmpty(providerName) || !_providers.ContainsKey(providerName))
+            {
+                return;
+            }
+
+            _currentProvider = _providers[providerName];
+            _currentProvider.SetRate(_settings.SpeechRate);
+
+            if (!string.IsNullOrEmpty(voiceName))
+            {
+                await _currentProvider.SelectVoiceAsync(voiceName);
+            }
+
+            Console.WriteLine($"Using temporary TTS Provider: {_currentProvider.GetProviderName()} and voice: {voiceName}");
         }
 
         public static string CleanText(string text)
@@ -105,10 +354,20 @@ namespace NarratorHotkey.Speech
                 // 4. Translate dots followed immediately by letters (e.g. .cs -> dot cs, SpeechManager.cs -> SpeechManager dot cs) to prevent TTS freakouts
                 result = Regex.Replace(result, @"\.([a-zA-Z])", " dot $1");
 
-                // 5. Replace underscores with spaces so code variables are read naturally
+                // 5. Split CamelCase words (e.g. SpeechManager -> Speech Manager) so they are read as separate words
+                result = Regex.Replace(result, @"([a-z])([A-Z])", "$1 $2");
+
+                // 6. Replace hyphens between letters/digits with a space to keep speech natural (e.g. text-to-speech -> text to speech)
+                result = Regex.Replace(result, @"(?<=[a-zA-Z0-9])-(?=[a-zA-Z0-9])", " ");
+
+                // 7. Spell out consonant-only abbreviations/extensions (e.g. cs -> c s, ng -> n g, dll -> d l l)
+                result = Regex.Replace(result, @"\b[bcdfghjklmnpqrstvwxzBCDFGHJKLMNPQRSTVWXZ]{2,}\b", 
+                    m => string.Join(" ", m.Value.ToCharArray()));
+
+                // 8. Replace underscores with spaces so code variables are read naturally
                 result = result.Replace("_", " ");
 
-                // 6. Remove control characters and zero-width/formatting characters
+                // 9. Remove control characters and zero-width/formatting characters
                 var sb = new StringBuilder(result.Length);
                 foreach (char c in result)
                 {
@@ -124,18 +383,18 @@ namespace NarratorHotkey.Speech
                 }
                 result = sb.ToString();
 
-                // 7. Collapse long repeating patterns of decorative dividers (e.g. -----------, __________, **********)
+                // 10. Collapse long repeating patterns of decorative dividers (e.g. -----------, __________, **********)
                 result = Regex.Replace(result, @"([-_=*~#+]{3,})", " ");
 
-                // 8. Remove emojis and high surrogate characters (which cause TTS crashes or raw hex speak)
+                // 11. Remove emojis and high surrogate characters (which cause TTS crashes or raw hex speak)
                 result = Regex.Replace(result, @"[\uD800-\uDBFF][\uDC00-\uDFFF]", " ");
 
-                // 9. Escape/replace XML-unsafe delimiters to prevent System.Speech SSML interpretation errors
+                // 12. Escape/replace XML-unsafe delimiters to prevent System.Speech SSML interpretation errors
                 result = result.Replace("<", " less than ")
                                .Replace(">", " greater than ")
                                .Replace("&", " and ");
 
-                // 10. Clean up excessive whitespace
+                // 13. Clean up excessive whitespace
                 result = Regex.Replace(result, @"\s+", " ").Trim();
 
                 return result;
@@ -156,8 +415,14 @@ namespace NarratorHotkey.Speech
             if (string.IsNullOrWhiteSpace(cleanedText))
                 return;
 
-            // Use fire-and-forget pattern for sync context
-            _ = _currentProvider.SpeakAsync(cleanedText);
+            var provider = GetActiveProvider();
+            AddLogEntry(text, cleanedText, provider?.GetProviderName() ?? "Unknown");
+
+            if (provider != null)
+            {
+                // Use fire-and-forget safely
+                _ = provider.SpeakAsync(cleanedText);
+            }
         }
 
         public async Task SpeakAsync(string text)
@@ -169,21 +434,37 @@ namespace NarratorHotkey.Speech
             if (string.IsNullOrWhiteSpace(cleanedText))
                 return;
 
-            await _currentProvider.SpeakAsync(cleanedText);
+            var provider = await GetActiveProviderAsync();
+            AddLogEntry(text, cleanedText, provider?.GetProviderName() ?? "Unknown");
+
+            if (provider != null)
+            {
+                await provider.SpeakAsync(cleanedText);
+            }
         }
 
         public async Task StopAsync()
         {
-            await _currentProvider.StopAsync();
+            var provider = GetActiveProvider();
+            if (provider != null)
+            {
+                await provider.StopAsync();
+            }
         }
 
         public async Task<string[]> GetAvailableVoicesAsync()
         {
-            return await _currentProvider.GetAvailableVoicesAsync();
+            var provider = await GetActiveProviderAsync();
+            if (provider != null)
+            {
+                return await provider.GetAvailableVoicesAsync();
+            }
+            return new string[0];
         }
 
         public async Task<string[]> GetVoicesForProviderAsync(string providerName)
         {
+            await GetActiveProviderAsync();
             if (_providers.ContainsKey(providerName))
             {
                 return await _providers[providerName].GetAvailableVoicesAsync();
@@ -200,7 +481,7 @@ namespace NarratorHotkey.Speech
 
         public string GetCurrentProvider()
         {
-            return _currentProvider?.GetProviderName() ?? "Unknown";
+            return GetActiveProvider()?.GetProviderName() ?? "Unknown";
         }
     }
 }

@@ -21,10 +21,11 @@ namespace NarratorHotkey.Speech
         private float _currentRate = 1.0f;
         private bool _isInitialized = false;
         private bool _isSpeaking = false;
-        private System.Media.SoundPlayer _currentPlayer;
         private System.Threading.CancellationTokenSource _playTokenSource;
         private readonly List<string> _availableVoiceNames = [];
+#if WINDOWS
         private readonly WindowsTTSProvider _windowsFallback;
+#endif
 
         private static readonly string[] FallbackPiperVoices = new[]
         {
@@ -54,6 +55,7 @@ namespace NarratorHotkey.Speech
         private void AnnounceError(string message)
         {
             ReportProgress(message);
+#if WINDOWS
             try
             {
                 // Use Windows TTS to announce the error so user knows what's happening
@@ -64,13 +66,16 @@ namespace NarratorHotkey.Speech
             {
                 // Silently fail if Windows TTS isn't available
             }
+#endif
         }
 
         public PiperTTSProvider(AppSettings settings)
         {
             _settings = settings;
             _currentVoiceName = "en_US-lessac-medium";
+#if WINDOWS
             _windowsFallback = new WindowsTTSProvider(settings);
+#endif
         }
 
         private async Task EnsureInitializedAsync()
@@ -93,35 +98,60 @@ namespace NarratorHotkey.Speech
 
                 // Download Piper if not present
                 // PiperDownloader downloads to {_piperDir}/piper/piper.exe
-                _piperExePath = Path.Combine(_piperDir, "piper", "piper.exe");
-                if (!File.Exists(_piperExePath))
+                bool isWindows = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows);
+                
+                if (!isWindows && CommandExists("piper"))
                 {
-                    ReportProgress("Downloading Piper TTS executable (this may take a minute)...");
-                    await Task.Run(async () =>
-                    {
-                        try
-                        {
-                            ReportProgress("Connecting to download server...");
-                            await PiperDownloader.DownloadPiper().ExtractPiper(_piperDir);
-                            ReportProgress("Piper executable downloaded successfully");
-
-                            // Verify the file was actually created
-                            if (!File.Exists(_piperExePath))
-                            {
-                                throw new FileNotFoundException($"Piper executable was not created at {_piperExePath} after download. Check directory permissions and available disk space.");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            ReportProgress($"ERROR: Piper download failed: {ex.Message}");
-                            Console.WriteLine($"Full error: {ex}");
-                            throw;
-                        }
-                    });
+                    _piperExePath = "piper";
+                    ReportProgress("Using system-wide Piper executable");
                 }
                 else
                 {
-                    ReportProgress("Piper executable found");
+                    string exeName = isWindows ? "piper.exe" : "piper";
+                    _piperExePath = Path.Combine(_piperDir, "piper", exeName);
+                    
+                    if (!File.Exists(_piperExePath))
+                    {
+                        ReportProgress("Downloading Piper TTS executable (this may take a minute)...");
+                        await Task.Run(async () =>
+                        {
+                            try
+                            {
+                                ReportProgress("Connecting to download server...");
+                                await PiperDownloader.DownloadPiper().ExtractPiper(_piperDir);
+                                ReportProgress("Piper executable downloaded successfully");
+
+                                // Verify the file was actually created
+                                if (!File.Exists(_piperExePath))
+                                {
+                                    throw new FileNotFoundException($"Piper executable was not created at {_piperExePath} after download. Check directory permissions and available disk space.");
+                                }
+                                
+                                // On Linux, make the downloaded file executable
+                                if (!isWindows)
+                                {
+                                    try
+                                    {
+                                        System.Diagnostics.Process.Start("chmod", $"+x \"{_piperExePath}\"")?.WaitForExit();
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        ReportProgress($"Warning: Failed to set executable permissions on {_piperExePath}: {ex.Message}");
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                ReportProgress($"ERROR: Piper download failed: {ex.Message}");
+                                Console.WriteLine($"Full error: {ex}");
+                                throw;
+                            }
+                        });
+                    }
+                    else
+                    {
+                        ReportProgress("Piper executable found");
+                    }
                 }
 
                 // Get available models from HuggingFace
@@ -254,7 +284,6 @@ namespace NarratorHotkey.Speech
         public Task StopAsync()
         {
             _isSpeaking = false;
-            _currentPlayer?.Stop();
             _playTokenSource?.Cancel();
             return Task.CompletedTask;
         }
@@ -486,46 +515,35 @@ namespace NarratorHotkey.Speech
             return mergedChunks;
         }
 
-        private int GetWavDurationMs(byte[] wavData)
+        private static bool CommandExists(string command)
         {
             try
             {
-                if (wavData == null || wavData.Length < 44) return 0;
-                int byteRate = BitConverter.ToInt32(wavData, 28);
-                if (byteRate <= 0) return 3000;
-                return (int)(((wavData.Length - 44) * 1000L) / byteRate);
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "which",
+                    Arguments = command,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using var process = System.Diagnostics.Process.Start(psi);
+                process?.WaitForExit();
+                return process?.ExitCode == 0;
             }
             catch
             {
-                return 3000;
+                return false;
             }
         }
 
         private async Task PlayAudioAsync(byte[] audioData)
         {
+            _playTokenSource = new System.Threading.CancellationTokenSource();
             try
             {
-                int durationMs = GetWavDurationMs(audioData);
-
-                // Use MemoryStream to avoid disk I/O and locking issues
-                using var ms = new MemoryStream(audioData);
-                _currentPlayer = new System.Media.SoundPlayer(ms);
-                
-                if (_isSpeaking)
-                {
-                    _currentPlayer.Play(); // Play asynchronously, no task blocking
-                }
-
-                _playTokenSource = new System.Threading.CancellationTokenSource();
-                try
-                {
-                    // Delay logically until the sound completes, plus a tiny margin
-                    await Task.Delay(durationMs + 100, _playTokenSource.Token);
-                }
-                catch (TaskCanceledException)
-                {
-                    // Cancelled by hotkey StopAsync()
-                }
+                await AudioPlayer.PlayWavAsync(audioData, _playTokenSource.Token);
             }
             catch (Exception ex)
             {
@@ -533,8 +551,6 @@ namespace NarratorHotkey.Speech
             }
             finally
             {
-                _currentPlayer?.Dispose();
-                _currentPlayer = null;
                 _playTokenSource?.Dispose();
                 _playTokenSource = null;
             }

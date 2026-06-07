@@ -1,4 +1,4 @@
-﻿namespace NarratorHotkey;
+namespace NarratorHotkey;
 
 using System;
 using System.Runtime.InteropServices;
@@ -27,9 +27,22 @@ public static class
     [DllImport("user32.dll")]
     internal static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, IntPtr dwExtraInfo);
 
+    [DllImport("user32.dll")]
+    internal static extern short GetAsyncKeyState(int vKey);
+
     // Virtual key codes
+    internal const byte VK_SHIFT = 0x10;
+    internal const byte VK_CONTROL = 0x11;
+    internal const byte VK_MENU = 0x12; // Alt key
     internal const byte VK_C = 0x43; // 'C' key
-    internal const byte VK_LCONTROL = 0xA2; // Left Control key
+    internal const byte VK_LWIN = 0x5B;
+    internal const byte VK_RWIN = 0x5C;
+    internal const byte VK_LSHIFT = 0xA0;
+    internal const byte VK_RSHIFT = 0xA1;
+    internal const byte VK_LCONTROL = 0xA2;
+    internal const byte VK_RCONTROL = 0xA3;
+    internal const byte VK_LMENU = 0xA4;
+    internal const byte VK_RMENU = 0xA5;
 
     // Keyboard event flags
     internal const uint KEYEVENTF_KEYDOWN = 0x0000;

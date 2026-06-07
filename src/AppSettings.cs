@@ -16,6 +16,8 @@ public class AppSettings
     public int SpeechRate { get; set; } = 6; // Default rate
     public string TTSProvider { get; set; } = "Windows"; // "Windows" or "Piper"
     public string PiperVoice { get; set; } = "en_US-lessac-medium"; // Default Piper voice
+    public string WindowsNaturalVoice { get; set; } = ""; // Default Windows Natural voice
+    public string KokoroVoice { get; set; } = "af_heart"; // Default Kokoro voice
     public string HotkeyModifier { get; set; } = "Control"; // "Control", "Alt", "Shift", "None"
     public string HotkeyKey { get; set; } = "2"; // Default key
     public bool EnableProgressiveChunking { get; set; } = true;
@@ -35,27 +37,69 @@ public class AppSettings
 
     public static AppSettings Load()
     {
-        if (!File.Exists(SettingsPath)) return new AppSettings();
-        var jsonString = File.ReadAllText(SettingsPath);
-        return JsonSerializer.Deserialize<AppSettings>(jsonString) ?? new AppSettings();
+        try
+        {
+            if (!File.Exists(SettingsPath)) return new AppSettings();
+            var jsonString = File.ReadAllText(SettingsPath);
+            if (string.IsNullOrWhiteSpace(jsonString)) return new AppSettings();
+            var settings = JsonSerializer.Deserialize<AppSettings>(jsonString) ?? new AppSettings();
 
+            // Migrate "Windows Natural" to "Windows"
+            if (settings.TTSProvider == "Windows Natural")
+            {
+                settings.TTSProvider = "Windows";
+                if (!string.IsNullOrEmpty(settings.WindowsNaturalVoice))
+                {
+                    settings.SelectedVoice = settings.WindowsNaturalVoice;
+                }
+            }
+            return settings;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading settings: {ex.Message}");
+            return new AppSettings();
+        }
     }
+
     public void Reload()
     {
-        if (File.Exists(SettingsPath))
+        try
         {
-            var jsonString = File.ReadAllText(SettingsPath);
-            var newSettings = JsonSerializer.Deserialize<AppSettings>(jsonString);
-            if (newSettings != null)
+            if (File.Exists(SettingsPath))
             {
-                this.SelectedVoice = newSettings.SelectedVoice;
-                this.SpeechRate = newSettings.SpeechRate;
-                this.TTSProvider = newSettings.TTSProvider;
-                this.PiperVoice = newSettings.PiperVoice;
-                this.HotkeyModifier = newSettings.HotkeyModifier;
-                this.HotkeyKey = newSettings.HotkeyKey;
-                this.EnableProgressiveChunking = newSettings.EnableProgressiveChunking;
+                var jsonString = File.ReadAllText(SettingsPath);
+                if (!string.IsNullOrWhiteSpace(jsonString))
+                {
+                    var newSettings = JsonSerializer.Deserialize<AppSettings>(jsonString);
+                    if (newSettings != null)
+                    {
+                        this.SelectedVoice = newSettings.SelectedVoice;
+                        this.SpeechRate = newSettings.SpeechRate;
+                        this.TTSProvider = newSettings.TTSProvider;
+                        this.PiperVoice = newSettings.PiperVoice;
+                        this.WindowsNaturalVoice = newSettings.WindowsNaturalVoice;
+                        this.KokoroVoice = newSettings.KokoroVoice;
+                        this.HotkeyModifier = newSettings.HotkeyModifier;
+                        this.HotkeyKey = newSettings.HotkeyKey;
+                        this.EnableProgressiveChunking = newSettings.EnableProgressiveChunking;
+
+                        // Migrate "Windows Natural" to "Windows"
+                        if (this.TTSProvider == "Windows Natural")
+                        {
+                            this.TTSProvider = "Windows";
+                            if (!string.IsNullOrEmpty(this.WindowsNaturalVoice))
+                            {
+                                this.SelectedVoice = this.WindowsNaturalVoice;
+                            }
+                        }
+                    }
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error reloading settings: {ex.Message}");
         }
     }
 }

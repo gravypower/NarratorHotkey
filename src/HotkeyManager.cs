@@ -8,16 +8,31 @@ using System.Threading.Tasks;
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
 
-public class HotkeyManager
+public class HotkeyManager : IMessageFilter
 {
     private const int HOTKEY_ID = 1;
-    private readonly IntPtr _windowHandle;
     private bool _isRegistered;
+    private readonly Action _onHotkeyTriggered;
 
-    public HotkeyManager(IntPtr windowHandle)
+    public HotkeyManager(Action onHotkeyTriggered)
     {
-        _windowHandle = windowHandle;
+        _onHotkeyTriggered = onHotkeyTriggered;
+        Application.AddMessageFilter(this);
         RegisterHotKey();
+    }
+
+    public bool PreFilterMessage(ref Message m)
+    {
+        if (m.Msg == Interoperability.WM_HOTKEY)
+        {
+            Console.WriteLine($"[HotkeyManager] Thread-level message received! Msg: {m.Msg:X4}, WParam: {m.WParam.ToInt64():X}, LParam: {m.LParam.ToInt64():X}");
+            if (m.WParam.ToInt32() == HOTKEY_ID)
+            {
+                _onHotkeyTriggered?.Invoke();
+                return true; // Eat the message so other components do not process it
+            }
+        }
+        return false;
     }
 
     public void RegisterHotKey()
@@ -27,13 +42,16 @@ public class HotkeyManager
         uint key = Interoperability.GetKeyCode(settings.HotkeyKey);
 
         _isRegistered = Interoperability.RegisterHotKey(
-            _windowHandle,
+            IntPtr.Zero,
             HOTKEY_ID,
             modifier,
             key);
 
+        Console.WriteLine($"[HotkeyManager] Thread-level RegisterHotKey result: {_isRegistered} (Modifier: {settings.HotkeyModifier}, Key: {settings.HotkeyKey})");
+
         if (!_isRegistered)
         {
+            Console.WriteLine($"[HotkeyManager] ERROR: Failed to register thread-level hotkey ({settings.HotkeyModifier}+{settings.HotkeyKey}).");
             MessageBox.Show($"Could not register the hotkey ({settings.HotkeyModifier}+{settings.HotkeyKey}).",
                 "Hotkey Registration Error",
                 MessageBoxButtons.OK,
@@ -44,14 +62,23 @@ public class HotkeyManager
     public void UnregisterHotKey()
     {
         if (!_isRegistered) return;
-        // Unregister the hotkey
-        Interoperability.UnregisterHotKey(_windowHandle, HOTKEY_ID);
+        Interoperability.UnregisterHotKey(IntPtr.Zero, HOTKEY_ID);
         _isRegistered = false;
+        try
+        {
+            Application.RemoveMessageFilter(this);
+        }
+        catch { }
     }
 
     public void ReloadHotKey()
     {
         UnregisterHotKey();
+        try
+        {
+            Application.AddMessageFilter(this);
+        }
+        catch { }
         RegisterHotKey();
     }
 
@@ -76,9 +103,28 @@ public class HotkeyManager
 
     public static async Task<string> GetSelectedTextAsync()
     {
-        // Try UI Automation first (can run on MTA/background thread safely)
-        string uiaText = await Task.Run(() => GetTextViaUIAutomation());
-        if (!string.IsNullOrEmpty(uiaText))
+        // Try UI Automation with a timeout (e.g., 200ms) to ensure responsiveness
+        string uiaText = string.Empty;
+        try
+        {
+            var uiaTask = Task.Run(() => GetTextViaUIAutomation());
+            var delayTask = Task.Delay(200);
+            var completedTask = await Task.WhenAny(uiaTask, delayTask);
+            if (completedTask == uiaTask)
+            {
+                uiaText = await uiaTask;
+            }
+            else
+            {
+                Console.WriteLine("UI Automation timed out. Falling back to clipboard.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"UI Automation task failed: {ex.Message}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(uiaText))
         {
             return uiaText;
         }
@@ -119,43 +165,75 @@ public class HotkeyManager
 
                 // Clear clipboard first
                 Clipboard.Clear();
-                Thread.Sleep(100);
+                Thread.Sleep(50);
 
                 // Send WM_COPY message to the window (more reliable than simulating keystrokes)
                 SendMessage(hWnd, Interoperability.WM_COPY, 0, 0);
 
-                // If WM_COPY didn't work, try keyboard simulation as fallback
-                Thread.Sleep(200);
-
-                // Simulate Ctrl+C to copy selected text (fallback method)
-                keybd_event(Interoperability.VK_LCONTROL, 0, Interoperability.KEYEVENTF_KEYDOWN, IntPtr.Zero);
+                // Check if WM_COPY worked immediately
                 Thread.Sleep(50);
-                keybd_event(Interoperability.VK_C, 0, Interoperability.KEYEVENTF_KEYDOWN, IntPtr.Zero);
-                Thread.Sleep(50);
-                keybd_event(Interoperability.VK_C, 0, Interoperability.KEYEVENTF_KEYUP, IntPtr.Zero);
-                Thread.Sleep(50);
-                keybd_event(Interoperability.VK_LCONTROL, 0, Interoperability.KEYEVENTF_KEYUP, IntPtr.Zero);
-
-                // Wait for clipboard to be updated
-                Thread.Sleep(200);
-
-                string selectedText = string.Empty;
-
-                // Retrieve text from clipboard
+                bool wmCopyWorked = false;
                 try
                 {
                     if (Clipboard.ContainsText())
                     {
-                        var text = Clipboard.GetText();
-                        if (!string.IsNullOrEmpty(text))
-                        {
-                            selectedText = text;
-                        }
+                        wmCopyWorked = true;
                     }
                 }
-                catch (Exception ex)
+                catch { }
+
+                if (!wmCopyWorked)
                 {
-                    Console.WriteLine($"Failed to retrieve clipboard text: {ex.Message}");
+                    // Identify which modifiers are currently pressed physically/virtually
+                    bool ctrlDown = (GetAsyncKeyState(Interoperability.VK_CONTROL) & 0x8000) != 0;
+                    bool altDown = (GetAsyncKeyState(Interoperability.VK_MENU) & 0x8000) != 0;
+                    bool shiftDown = (GetAsyncKeyState(Interoperability.VK_SHIFT) & 0x8000) != 0;
+                    bool winDown = ((GetAsyncKeyState(Interoperability.VK_LWIN) & 0x8000) != 0) || 
+                                   ((GetAsyncKeyState(Interoperability.VK_RWIN) & 0x8000) != 0);
+
+                    // Release modifiers if they are down
+                    if (ctrlDown) keybd_event(Interoperability.VK_LCONTROL, 0, Interoperability.KEYEVENTF_KEYUP, IntPtr.Zero);
+                    if (altDown) keybd_event(Interoperability.VK_LMENU, 0, Interoperability.KEYEVENTF_KEYUP, IntPtr.Zero);
+                    if (shiftDown) keybd_event(Interoperability.VK_LSHIFT, 0, Interoperability.KEYEVENTF_KEYUP, IntPtr.Zero);
+                    if (winDown) keybd_event(Interoperability.VK_LWIN, 0, Interoperability.KEYEVENTF_KEYUP, IntPtr.Zero);
+
+                    // Now simulate Ctrl + C
+                    keybd_event(Interoperability.VK_LCONTROL, 0, Interoperability.KEYEVENTF_KEYDOWN, IntPtr.Zero);
+                    Thread.Sleep(50);
+                    keybd_event(Interoperability.VK_C, 0, Interoperability.KEYEVENTF_KEYDOWN, IntPtr.Zero);
+                    Thread.Sleep(50);
+                    keybd_event(Interoperability.VK_C, 0, Interoperability.KEYEVENTF_KEYUP, IntPtr.Zero);
+                    Thread.Sleep(50);
+                    keybd_event(Interoperability.VK_LCONTROL, 0, Interoperability.KEYEVENTF_KEYUP, IntPtr.Zero);
+
+                    // Restore modifiers if they were down
+                    if (winDown) keybd_event(Interoperability.VK_LWIN, 0, Interoperability.KEYEVENTF_KEYDOWN, IntPtr.Zero);
+                    if (shiftDown) keybd_event(Interoperability.VK_LSHIFT, 0, Interoperability.KEYEVENTF_KEYDOWN, IntPtr.Zero);
+                    if (altDown) keybd_event(Interoperability.VK_LMENU, 0, Interoperability.KEYEVENTF_KEYDOWN, IntPtr.Zero);
+                    if (ctrlDown) keybd_event(Interoperability.VK_LCONTROL, 0, Interoperability.KEYEVENTF_KEYDOWN, IntPtr.Zero);
+                }
+
+                // Poll clipboard for up to 1000ms (20 * 50ms) to wait for target app to populate it
+                string selectedText = string.Empty;
+                for (int i = 0; i < 20; i++)
+                {
+                    try
+                    {
+                        if (Clipboard.ContainsText())
+                        {
+                            var text = Clipboard.GetText();
+                            if (!string.IsNullOrEmpty(text))
+                            {
+                                selectedText = text;
+                                break;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to retrieve clipboard text on attempt {i}: {ex.Message}");
+                    }
+                    Thread.Sleep(50);
                 }
 
                 // **Restore the previous clipboard state**
@@ -203,7 +281,7 @@ public class HotkeyManager
                     if (textSelection.Length > 0)
                     {
                         string selectedText = textSelection[0].GetText(-1);
-                        if (!string.IsNullOrEmpty(selectedText))
+                        if (!string.IsNullOrWhiteSpace(selectedText))
                         {
                             return selectedText;
                         }
@@ -213,7 +291,7 @@ public class HotkeyManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"UI Automation failed: {ex.Message}");
+            Console.WriteLine($"UI Automation error: {ex.Message}");
         }
         return string.Empty;
     }

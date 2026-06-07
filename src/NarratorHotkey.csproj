@@ -1,16 +1,49 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <OutputType>WinExe</OutputType>
-        <TargetFramework>net9.0-windows</TargetFramework>
-        <UseWPF>true</UseWPF>
-        <UseWindowsForms>true</UseWindowsForms> <!-- This enables NotifyIcon -->
+        <TargetFrameworks>net10.0-windows10.0.19041.0;net10.0</TargetFrameworks>
         <ApplicationIcon>icon.ico</ApplicationIcon>
+        <EnableWindowsTargeting>true</EnableWindowsTargeting>
+        <LangVersion>latest</LangVersion>
+        <StartupObject>NarratorHotkey.Program</StartupObject>
+        <RollForward>Major</RollForward>
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="System.Speech" Version="9.0.6" />
-      <PackageReference Include="PiperSharp" Version="1.0.6" />
+        <None Update="icon.ico">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+    </ItemGroup>
+
+    <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
+        <OutputType>WinExe</OutputType>
+        <UseWindowsForms>true</UseWindowsForms>
+        <UseWPF>true</UseWPF>
+        <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0'">
+        <OutputType>Exe</OutputType>
+        <RuntimeFrameworkVersion>10.0.0-preview.7.25380.108</RuntimeFrameworkVersion>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="org.k2fsa.sherpa.onnx" Version="*" />
+        <PackageReference Include="PiperSharp" Version="1.0.6" />
+    </ItemGroup>
+
+    <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
+        <PackageReference Include="System.Speech" Version="9.0.6" />
+    </ItemGroup>
+
+    <!-- Exclude Windows-specific files when target is net10.0 -->
+    <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+        <Compile Remove="AssemblyInfo.cs" />
+        <Compile Remove="TrayApplication.cs" />
+        <Compile Remove="Speech/WindowsTTSProvider.cs" />
+        <Compile Remove="Speech/Synthesize.cs" />
+        <Compile Remove="HotkeyManager.cs" />
+        <Compile Remove="Interoperability.cs" />
     </ItemGroup>
 
 </Project>
