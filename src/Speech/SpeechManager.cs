@@ -351,23 +351,31 @@ namespace NarratorHotkey.Speech
                 // 3. Replace any remaining newlines/tabs with a space to keep speech continuous
                 result = Regex.Replace(result, @"[\r\n\t]+", " ");
 
-                // 4. Translate dots followed immediately by letters (e.g. .cs -> dot cs, SpeechManager.cs -> SpeechManager dot cs) to prevent TTS freakouts
-                result = Regex.Replace(result, @"\.([a-zA-Z])", " dot $1");
+                // 4. Break file names and paths into speakable words (e.g. src/Speech/SpeechManager.cs ->
+                //    src slash Speech slash SpeechManager cs). The dot is a full stop but it is not
+                //    the end of a sentence, and left in place the phonemizer tries to say the whole
+                //    path as one token. Also catches extensions the rule below misses (.7z).
+                result = TextNormalizer.NormalizeFileReferences(result);
 
-                // 5. Split CamelCase words (e.g. SpeechManager -> Speech Manager) so they are read as separate words
+                // 5. Break any remaining dot notation (e.g. SpeechManager.Instance -> SpeechManager Instance)
+                //    to prevent TTS freakouts. The dot becomes a word break; speaking it as "dot"
+                //    mid-sentence sounds like a full stop.
+                result = Regex.Replace(result, @"\.([a-zA-Z])", " $1");
+
+                // 6. Split CamelCase words (e.g. SpeechManager -> Speech Manager) so they are read as separate words
                 result = Regex.Replace(result, @"([a-z])([A-Z])", "$1 $2");
 
-                // 6. Replace hyphens between letters/digits with a space to keep speech natural (e.g. text-to-speech -> text to speech)
+                // 7. Replace hyphens between letters/digits with a space to keep speech natural (e.g. text-to-speech -> text to speech)
                 result = Regex.Replace(result, @"(?<=[a-zA-Z0-9])-(?=[a-zA-Z0-9])", " ");
 
-                // 7. Spell out consonant-only abbreviations/extensions (e.g. cs -> c s, ng -> n g, dll -> d l l)
+                // 8. Spell out consonant-only abbreviations/extensions (e.g. cs -> c s, ng -> n g, dll -> d l l)
                 result = Regex.Replace(result, @"\b[bcdfghjklmnpqrstvwxzBCDFGHJKLMNPQRSTVWXZ]{2,}\b", 
                     m => string.Join(" ", m.Value.ToCharArray()));
 
-                // 8. Replace underscores with spaces so code variables are read naturally
+                // 9. Replace underscores with spaces so code variables are read naturally
                 result = result.Replace("_", " ");
 
-                // 9. Remove control characters and zero-width/formatting characters
+                // 10. Remove control characters and zero-width/formatting characters
                 var sb = new StringBuilder(result.Length);
                 foreach (char c in result)
                 {
@@ -383,18 +391,18 @@ namespace NarratorHotkey.Speech
                 }
                 result = sb.ToString();
 
-                // 10. Collapse long repeating patterns of decorative dividers (e.g. -----------, __________, **********)
+                // 11. Collapse long repeating patterns of decorative dividers (e.g. -----------, __________, **********)
                 result = Regex.Replace(result, @"([-_=*~#+]{3,})", " ");
 
-                // 11. Remove emojis and high surrogate characters (which cause TTS crashes or raw hex speak)
+                // 12. Remove emojis and high surrogate characters (which cause TTS crashes or raw hex speak)
                 result = Regex.Replace(result, @"[\uD800-\uDBFF][\uDC00-\uDFFF]", " ");
 
-                // 12. Escape/replace XML-unsafe delimiters to prevent System.Speech SSML interpretation errors
+                // 13. Escape/replace XML-unsafe delimiters to prevent System.Speech SSML interpretation errors
                 result = result.Replace("<", " less than ")
                                .Replace(">", " greater than ")
                                .Replace("&", " and ");
 
-                // 13. Clean up excessive whitespace
+                // 14. Clean up excessive whitespace
                 result = Regex.Replace(result, @"\s+", " ").Trim();
 
                 return result;

@@ -14,15 +14,25 @@ namespace NarratorHotkey.Speech
     /// </summary>
     public class PiperTTSProvider : ITTSProvider
     {
+        private const string DefaultVoiceName = "en_US-lessac-medium";
+
         private readonly AppSettings _settings;
         private string _piperDir;
         private string _piperExePath;
         private string _currentVoiceName;
         private float _currentRate = 1.0f;
-        private bool _isInitialized = false;
+        private volatile bool _isInitialized = false;
         private bool _isSpeaking = false;
         private System.Threading.CancellationTokenSource _playTokenSource;
-        private readonly List<string> _availableVoiceNames = [];
+
+        // Replaced wholesale once the catalogue is downloaded. A shared List that is
+        // cleared and refilled can be observed mid-write by another caller, which is
+        // what used to make voice selection throw and silently fall back to the default.
+        private volatile string[] _availableVoiceNames = Array.Empty<string>();
+
+        // Initialization downloads the executable and the voice catalogue; running it
+        // twice concurrently corrupts both.
+        private readonly System.Threading.SemaphoreSlim _initLock = new(1, 1);
 #if WINDOWS
         private readonly WindowsTTSProvider _windowsFallback;
 #endif
@@ -72,7 +82,7 @@ namespace NarratorHotkey.Speech
         public PiperTTSProvider(AppSettings settings)
         {
             _settings = settings;
-            _currentVoiceName = "en_US-lessac-medium";
+            _currentVoiceName = DefaultVoiceName;
 #if WINDOWS
             _windowsFallback = new WindowsTTSProvider(settings);
 #endif
@@ -82,6 +92,20 @@ namespace NarratorHotkey.Speech
         {
             if (_isInitialized) return;
 
+            await _initLock.WaitAsync();
+            try
+            {
+                if (_isInitialized) return;
+                await InitializeAsync();
+            }
+            finally
+            {
+                _initLock.Release();
+            }
+        }
+
+        private async Task InitializeAsync()
+        {
             try
             {
                 _piperDir = Path.Combine(
@@ -164,9 +188,9 @@ namespace NarratorHotkey.Speech
                         var modelList = await PiperDownloader.GetHuggingFaceModelList();
                         if (modelList != null)
                         {
-                            _availableVoiceNames.Clear();
-                            _availableVoiceNames.AddRange(modelList.Keys);
-                            ReportProgress($"Loaded {_availableVoiceNames.Count} voice models");
+                            var names = modelList.Keys.OrderBy(v => v).ToArray();
+                            _availableVoiceNames = names;
+                            ReportProgress($"Loaded {names.Length} voice models");
                         }
                     }
                     catch (Exception ex)
@@ -247,7 +271,7 @@ namespace NarratorHotkey.Speech
                 }
                 else
                 {
-                    var chunks = ChunkText(text);
+                    var chunks = TextNormalizer.ChunkText(text);
                     if (chunks.Count == 0) return;
 
                     Task<byte[]> nextInferenceTask = piperProvider.InferAsync(chunks[0], AudioOutputType.Wav);
@@ -294,12 +318,8 @@ namespace NarratorHotkey.Speech
             {
                 await EnsureInitializedAsync();
 
-                if (_availableVoiceNames.Count == 0)
-                {
-                    return FallbackPiperVoices;
-                }
-
-                return _availableVoiceNames.OrderBy(v => v).ToArray();
+                var catalogue = _availableVoiceNames;
+                return catalogue.Length == 0 ? FallbackPiperVoices : catalogue;
             }
             catch (Exception ex)
             {
@@ -310,31 +330,54 @@ namespace NarratorHotkey.Speech
 
         public async Task SelectVoiceAsync(string voiceName)
         {
+            if (string.IsNullOrWhiteSpace(voiceName))
+                return;
+
             try
             {
                 await EnsureInitializedAsync();
-
-                if (_availableVoiceNames.Count == 0 || !_availableVoiceNames.Contains(voiceName))
-                {
-                    // Allow selecting standard English voices if we are running in offline/fallback mode
-                    if (FallbackPiperVoices.Contains(voiceName))
-                    {
-                        _currentVoiceName = voiceName;
-                        Console.WriteLine($"Selected voice from fallback list: {voiceName}");
-                        return;
-                    }
-
-                    Console.WriteLine($"Voice model '{voiceName}' not found, using default");
-                    _currentVoiceName = "en_US-lessac-medium";
-                    return;
-                }
-
-                _currentVoiceName = voiceName;
-                Console.WriteLine($"Selected voice: {voiceName}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Failed to select voice: {ex.Message}");
+                // The catalogue is only used to validate the name. If it could not be
+                // fetched we still honour the request below rather than silently
+                // leaving the previous voice in place.
+                Console.WriteLine($"Piper initialization failed while selecting '{voiceName}': {ex.Message}");
+            }
+
+            var catalogue = _availableVoiceNames;
+            if (catalogue.Length > 0 && Array.IndexOf(catalogue, voiceName) >= 0)
+            {
+                _currentVoiceName = voiceName;
+                Console.WriteLine($"Selected voice: {voiceName}");
+                return;
+            }
+
+            // No catalogue (offline, or the fetch failed): accept the voice if we
+            // recognise it or its model is already downloaded.
+            if (FallbackPiperVoices.Contains(voiceName) || IsModelCached(voiceName))
+            {
+                _currentVoiceName = voiceName;
+                Console.WriteLine($"Selected voice without catalogue confirmation: {voiceName}");
+                return;
+            }
+
+            Console.WriteLine($"Voice model '{voiceName}' not found, using default");
+            _currentVoiceName = DefaultVoiceName;
+        }
+
+        private bool IsModelCached(string voiceName)
+        {
+            if (string.IsNullOrEmpty(_piperDir))
+                return false;
+
+            try
+            {
+                return File.Exists(Path.Combine(_piperDir, "models", voiceName, "model.json"));
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -462,57 +505,6 @@ namespace NarratorHotkey.Speech
                 AnnounceError($"Failed to download model {voiceName}: {ex.Message}");
                 return null;
             }
-        }
-
-        private List<string> ChunkText(string text)
-        {
-            var chunks = new List<string>();
-            if (string.IsNullOrWhiteSpace(text)) return chunks;
-
-            // Split by newlines first
-            string[] rawChunks = text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-            
-            foreach (var rawChunk in rawChunks)
-            {
-                // Split by common sentence endings, but keep the punctuation attached to the sentence
-                // using positive lookbehind.
-                // Note: \s+ will swallow spaces after the punctuation, which is fine for TTS.
-                var sentences = System.Text.RegularExpressions.Regex.Split(rawChunk, @"(?<=[.!?])\s+");
-                foreach (var sentence in sentences)
-                {
-                    if (!string.IsNullOrWhiteSpace(sentence))
-                    {
-                        chunks.Add(sentence.Trim());
-                    }
-                }
-            }
-
-            // Combine very short chunks to avoid excessive overhead
-            var mergedChunks = new List<string>();
-            string currentChunk = "";
-            
-            foreach (var chunk in chunks)
-            {
-                // 60 characters is arbitrary; short enough to combine "Hi." "How are you?"
-                if (currentChunk.Length + chunk.Length < 60 && currentChunk.Length > 0)
-                {
-                    currentChunk += " " + chunk;
-                }
-                else
-                {
-                    if (!string.IsNullOrEmpty(currentChunk))
-                    {
-                        mergedChunks.Add(currentChunk);
-                    }
-                    currentChunk = chunk;
-                }
-            }
-            if (!string.IsNullOrEmpty(currentChunk))
-            {
-                mergedChunks.Add(currentChunk);
-            }
-
-            return mergedChunks;
         }
 
         private static bool CommandExists(string command)

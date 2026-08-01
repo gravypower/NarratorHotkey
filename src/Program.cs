@@ -84,6 +84,16 @@ namespace NarratorHotkey
                     break;
                 case "--settings":
                 case "--ui":
+                    if (!await IsDaemonRunningAsync())
+                    {
+                        Console.WriteLine("Daemon not running. Starting background daemon...");
+                        StartDaemonProcess();
+                        for (int i = 0; i < 5; i++)
+                        {
+                            await Task.Delay(400);
+                            if (await IsDaemonRunningAsync()) break;
+                        }
+                    }
                     OpenBrowser($"http://127.0.0.1:{Port}");
                     break;
                 case "--stop":
@@ -251,12 +261,36 @@ namespace NarratorHotkey
             string currentExe = Environment.ProcessPath;
             if (string.IsNullOrEmpty(currentExe)) return;
             
+            string arguments = "--daemon";
+            string fileName = currentExe;
+
+            string exeName = Path.GetFileName(currentExe);
+            if (exeName.Equals("dotnet", StringComparison.OrdinalIgnoreCase) || 
+                exeName.Equals("dotnet.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                string dllPath = System.Reflection.Assembly.GetEntryAssembly()?.Location;
+                if (string.IsNullOrEmpty(dllPath) || !File.Exists(dllPath))
+                {
+                    dllPath = Path.Combine(AppContext.BaseDirectory, "NarratorHotkey.dll");
+                }
+
+                if (File.Exists(dllPath))
+                {
+                    arguments = $"\"{dllPath}\" --daemon";
+                }
+            }
+
+            Console.WriteLine($"Starting background daemon: {fileName} {arguments}");
+
+            bool isWindows = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows);
+
             Process.Start(new ProcessStartInfo
             {
-                FileName = currentExe,
-                Arguments = "--daemon",
-                UseShellExecute = false,
-                CreateNoWindow = true
+                FileName = fileName,
+                Arguments = arguments,
+                UseShellExecute = isWindows,
+                CreateNoWindow = true,
+                WindowStyle = isWindows ? ProcessWindowStyle.Hidden : ProcessWindowStyle.Normal
             });
         }
 
@@ -299,9 +333,27 @@ namespace NarratorHotkey
             }
         }
 
+        private static async Task<bool> IsDaemonRunningAsync()
+        {
+            try
+            {
+                using var client = new HttpClient();
+                client.Timeout = TimeSpan.FromSeconds(1);
+                var response = await client.GetAsync($"http://127.0.0.1:{Port}/api/status");
+                return response.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static async Task RunDaemonAsync()
         {
-            _appMutex = new Mutex(true, "Global\\NarratorHotkey_Tray_Mutex", out bool createdNew);
+            string mutexName = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
+                ? "Global\\NarratorHotkey_Tray_Mutex"
+                : "NarratorHotkey_Tray_Mutex";
+            _appMutex = new Mutex(true, mutexName, out bool createdNew);
             if (!createdNew)
             {
                 Console.WriteLine("Daemon or Tray Application is already running.");

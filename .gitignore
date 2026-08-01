@@ -54,3 +54,17 @@ TestResult.xml
 nunit-*.xml
 
 .idea
+
+# Per-user IDE settings
+*.user
+
+# Agent/tool state
+/.antigravitycli/
+
+# Runtime data written next to the repo when the app runs from here:
+# downloaded Kokoro/Piper models, settings.json, speech_log.json
+/NarratorHotkey/
+
+# Scratch build output and ad-hoc test input
+/temp_test/
+/sample.text

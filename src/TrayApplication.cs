@@ -93,6 +93,12 @@ public class TrayApplication : Form
         // Double click tray icon opens settings
         trayIcon.DoubleClick += (s, e) => ShowSettings();
 
+        // This form is never shown, so its window handle would never be created, and
+        // Control.InvokeRequired reports false until it is. Without a handle, settings
+        // saved from the web UI would run ReloadHotkey on the HttpListener thread
+        // instead of the message-loop thread that owns the hotkey registration.
+        _ = this.Handle;
+
         // Initialize hotkeys with the triggering action
         _hotkeyManager = new HotkeyManager(() => {
             _ = ProcessHotkeyAsync();
@@ -161,7 +167,7 @@ public class TrayApplication : Form
 
     private void ReloadHotkey()
     {
-        if (this.InvokeRequired)
+        if (this.IsHandleCreated && this.InvokeRequired)
         {
             this.BeginInvoke(new Action(ReloadHotkey));
             return;

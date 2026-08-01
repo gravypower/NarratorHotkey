@@ -23,10 +23,11 @@ namespace NarratorHotkey.Speech
         private OfflineTts _tts;
         private string _currentVoiceName = "af_heart";
         private float _currentRate = 1.0f;
-        private bool _isInitialized = false;
+        private volatile bool _isInitialized = false;
         private bool _isSpeaking = false;
         private System.Threading.CancellationTokenSource _playTokenSource;
         private readonly object _lock = new object();
+        private readonly System.Threading.SemaphoreSlim _initLock = new(1, 1);
 
         private static readonly string[] PresetVoices = new[]
         {
@@ -64,6 +65,22 @@ namespace NarratorHotkey.Speech
         {
             if (_isInitialized && _tts != null) return;
 
+            // Initialization downloads and extracts the model and builds the engine;
+            // two concurrent runs would fight over the same files.
+            await _initLock.WaitAsync();
+            try
+            {
+                if (_isInitialized && _tts != null) return;
+                await InitializeAsync();
+            }
+            finally
+            {
+                _initLock.Release();
+            }
+        }
+
+        private async Task InitializeAsync()
+        {
             try
             {
                 _kokoroDir = Path.Combine(
@@ -264,7 +281,7 @@ namespace NarratorHotkey.Speech
                 }
                 else
                 {
-                    var chunks = ChunkText(text);
+                    var chunks = TextNormalizer.ChunkText(text);
                     if (chunks.Count == 0) return;
 
                     // Start generating first chunk
@@ -358,57 +375,6 @@ namespace NarratorHotkey.Speech
             {
                 Console.WriteLine($"Error playing audio chunk: {ex.Message}");
             }
-        }
-
-        private List<string> ChunkText(string text)
-        {
-            var chunks = new List<string>();
-            if (string.IsNullOrWhiteSpace(text)) return chunks;
-
-            // Split by newlines first
-            string[] rawChunks = text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-            
-            foreach (var rawChunk in rawChunks)
-            {
-                // Split by common sentence endings, but keep the punctuation attached to the sentence
-                // using positive lookbehind.
-                // Note: \s+ will swallow spaces after the punctuation, which is fine for TTS.
-                var sentences = System.Text.RegularExpressions.Regex.Split(rawChunk, @"(?<=[.!?])\s+");
-                foreach (var sentence in sentences)
-                {
-                    if (!string.IsNullOrWhiteSpace(sentence))
-                    {
-                        chunks.Add(sentence.Trim());
-                    }
-                }
-            }
-
-            // Combine very short chunks to avoid excessive overhead
-            var mergedChunks = new List<string>();
-            string currentChunk = "";
-            
-            foreach (var chunk in chunks)
-            {
-                // 60 characters is arbitrary; short enough to combine "Hi." "How are you?"
-                if (currentChunk.Length + chunk.Length < 60 && currentChunk.Length > 0)
-                {
-                    currentChunk += " " + chunk;
-                }
-                else
-                {
-                    if (!string.IsNullOrEmpty(currentChunk))
-                    {
-                        mergedChunks.Add(currentChunk);
-                    }
-                    currentChunk = chunk;
-                }
-            }
-            if (!string.IsNullOrEmpty(currentChunk))
-            {
-                mergedChunks.Add(currentChunk);
-            }
-
-            return mergedChunks;
         }
 
         private void TryDeleteFile(string path)

@@ -11,15 +11,29 @@ using System.Windows.Automation.Text;
 public class HotkeyManager : IMessageFilter
 {
     private const int HOTKEY_ID = 1;
+    private const int ERROR_HOTKEY_ALREADY_REGISTERED = 1409;
     private bool _isRegistered;
     private readonly Action _onHotkeyTriggered;
+
+    // RegisterHotKey(IntPtr.Zero, ...) is thread-affine: the hotkey belongs to the
+    // thread that registered it, and only that thread can unregister it. Everything
+    // here must therefore run on the thread that owns the message loop.
+    private readonly int _ownerThreadId;
+
+    // What is currently registered, so a settings save that leaves the hotkey alone
+    // does not tear down and re-register a working binding.
+    private string _registeredModifier;
+    private string _registeredKey;
 
     public HotkeyManager(Action onHotkeyTriggered)
     {
         _onHotkeyTriggered = onHotkeyTriggered;
+        _ownerThreadId = Environment.CurrentManagedThreadId;
         Application.AddMessageFilter(this);
         RegisterHotKey();
     }
+
+    private bool OnOwnerThread => Environment.CurrentManagedThreadId == _ownerThreadId;
 
     public bool PreFilterMessage(ref Message m)
     {
@@ -37,6 +51,12 @@ public class HotkeyManager : IMessageFilter
 
     public void RegisterHotKey()
     {
+        if (!OnOwnerThread)
+        {
+            Console.WriteLine("[HotkeyManager] ERROR: RegisterHotKey called off the message-loop thread; ignoring.");
+            return;
+        }
+
         var settings = AppSettings.Load();
         uint modifier = Interoperability.GetModifierCode(settings.HotkeyModifier);
         uint key = Interoperability.GetKeyCode(settings.HotkeyKey);
@@ -49,21 +69,45 @@ public class HotkeyManager : IMessageFilter
 
         Console.WriteLine($"[HotkeyManager] Thread-level RegisterHotKey result: {_isRegistered} (Modifier: {settings.HotkeyModifier}, Key: {settings.HotkeyKey})");
 
-        if (!_isRegistered)
+        if (_isRegistered)
         {
-            Console.WriteLine($"[HotkeyManager] ERROR: Failed to register thread-level hotkey ({settings.HotkeyModifier}+{settings.HotkeyKey}).");
-            MessageBox.Show($"Could not register the hotkey ({settings.HotkeyModifier}+{settings.HotkeyKey}).",
-                "Hotkey Registration Error",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
+            _registeredModifier = settings.HotkeyModifier;
+            _registeredKey = settings.HotkeyKey;
+            return;
         }
+
+        _registeredModifier = null;
+        _registeredKey = null;
+
+        int error = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+        Console.WriteLine($"[HotkeyManager] ERROR: Failed to register thread-level hotkey ({settings.HotkeyModifier}+{settings.HotkeyKey}). Win32 error {error}.");
+
+        string reason = error == ERROR_HOTKEY_ALREADY_REGISTERED
+            ? "Another application has already claimed it."
+            : $"Windows reported error {error}.";
+
+        MessageBox.Show($"Could not register the hotkey ({settings.HotkeyModifier}+{settings.HotkeyKey}). {reason}",
+            "Hotkey Registration Error",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
     }
 
     public void UnregisterHotKey()
     {
         if (!_isRegistered) return;
+
+        if (!OnOwnerThread)
+        {
+            // Unregistering from another thread silently does nothing, which would
+            // leave the hotkey held and make the next registration fail.
+            Console.WriteLine("[HotkeyManager] ERROR: UnregisterHotKey called off the message-loop thread; ignoring.");
+            return;
+        }
+
         Interoperability.UnregisterHotKey(IntPtr.Zero, HOTKEY_ID);
         _isRegistered = false;
+        _registeredModifier = null;
+        _registeredKey = null;
         try
         {
             Application.RemoveMessageFilter(this);
@@ -73,6 +117,22 @@ public class HotkeyManager : IMessageFilter
 
     public void ReloadHotKey()
     {
+        if (!OnOwnerThread)
+        {
+            Console.WriteLine("[HotkeyManager] ERROR: ReloadHotKey called off the message-loop thread; ignoring.");
+            return;
+        }
+
+        var settings = AppSettings.Load();
+        if (_isRegistered &&
+            string.Equals(settings.HotkeyModifier, _registeredModifier, StringComparison.Ordinal) &&
+            string.Equals(settings.HotkeyKey, _registeredKey, StringComparison.Ordinal))
+        {
+            // Saving unrelated settings should not disturb a working binding.
+            Console.WriteLine("[HotkeyManager] Hotkey unchanged; keeping the existing registration.");
+            return;
+        }
+
         UnregisterHotKey();
         try
         {
