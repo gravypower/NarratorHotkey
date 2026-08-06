@@ -1208,7 +1208,7 @@ namespace NarratorHotkey
             try {
                 const res = await fetch(`${API_BASE}/api/clear-logs`, { method: 'POST' });
                 if (res.ok) {
-                    loadStatus();
+                    pollStatus();
                 }
             } catch (err) {
                 console.error('Clear logs failed:', err);
