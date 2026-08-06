@@ -26,6 +26,7 @@ namespace NarratorHotkey.Speech
         private volatile bool _isInitialized = false;
         private bool _isSpeaking = false;
         private System.Threading.CancellationTokenSource _playTokenSource;
+        private PlaybackSession _playbackSession;
         private readonly object _lock = new object();
         private readonly System.Threading.SemaphoreSlim _initLock = new(1, 1);
 
@@ -45,6 +46,17 @@ namespace NarratorHotkey.Speech
         };
 
         public bool IsSpeaking => _isSpeaking;
+
+        public bool IsPaused
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _isSpeaking && (_playbackSession?.IsPaused ?? false);
+                }
+            }
+        }
 
         public event Action<string> ProgressChanged;
         private void ReportProgress(string message)
@@ -261,6 +273,9 @@ namespace NarratorHotkey.Speech
             lock (_lock)
             {
                 _playTokenSource = new System.Threading.CancellationTokenSource();
+                // One session for the whole utterance, so a pause taken during one
+                // chunk still holds the chunks that follow it.
+                _playbackSession = new PlaybackSession();
                 _isSpeaking = true;
             }
 
@@ -363,13 +378,15 @@ namespace NarratorHotkey.Speech
             try
             {
                 System.Threading.CancellationToken token;
+                PlaybackSession session;
                 lock (_lock)
                 {
                     if (_playTokenSource == null || _playTokenSource.Token.IsCancellationRequested) return;
                     token = _playTokenSource.Token;
+                    session = _playbackSession;
                 }
 
-                await AudioPlayer.PlayWavAsync(audioData, token);
+                await AudioPlayer.PlayWavAsync(audioData, token, session);
             }
             catch (Exception ex)
             {
@@ -398,7 +415,30 @@ namespace NarratorHotkey.Speech
             {
                 _isSpeaking = false;
                 _playTokenSource?.Cancel();
+                _playbackSession = null;
             }
+            return Task.CompletedTask;
+        }
+
+        public Task PauseAsync()
+        {
+            PlaybackSession session;
+            lock (_lock)
+            {
+                session = _isSpeaking ? _playbackSession : null;
+            }
+            session?.Pause();
+            return Task.CompletedTask;
+        }
+
+        public Task ResumeAsync()
+        {
+            PlaybackSession session;
+            lock (_lock)
+            {
+                session = _playbackSession;
+            }
+            session?.Resume();
             return Task.CompletedTask;
         }
 

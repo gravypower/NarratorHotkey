@@ -113,6 +113,21 @@ namespace NarratorHotkey
                 {
                     await HandleStopAsync(response);
                 }
+                else if (path == "/api/pause" && request.HttpMethod == "POST")
+                {
+                    await SpeechManager.Instance.PauseAsync();
+                    await ServePauseStateAsync(response);
+                }
+                else if (path == "/api/resume" && request.HttpMethod == "POST")
+                {
+                    await SpeechManager.Instance.ResumeAsync();
+                    await ServePauseStateAsync(response);
+                }
+                else if (path == "/api/toggle-pause" && request.HttpMethod == "POST")
+                {
+                    await SpeechManager.Instance.TogglePauseAsync();
+                    await ServePauseStateAsync(response);
+                }
                 else if (path == "/api/clear-logs" && request.HttpMethod == "POST")
                 {
                     await HandleClearLogsAsync(response);
@@ -157,10 +172,13 @@ namespace NarratorHotkey
                     kokoroVoice = settings.KokoroVoice,
                     enableProgressiveChunking = settings.EnableProgressiveChunking,
                     hotkeyModifier = settings.HotkeyModifier,
-                    hotkeyKey = settings.HotkeyKey
+                    hotkeyKey = settings.HotkeyKey,
+                    pauseHotkeyModifier = settings.PauseHotkeyModifier,
+                    pauseHotkeyKey = settings.PauseHotkeyKey
                 },
                 history = history,
-                isSpeaking = SpeechManager.Instance.IsSpeaking
+                isSpeaking = SpeechManager.Instance.IsSpeaking,
+                isPaused = SpeechManager.Instance.IsPaused
             };
 
             string json = JsonSerializer.Serialize(data);
@@ -218,6 +236,8 @@ namespace NarratorHotkey
             public bool enableProgressiveChunking { get; set; }
             public string hotkeyModifier { get; set; }
             public string hotkeyKey { get; set; }
+            public string pauseHotkeyModifier { get; set; }
+            public string pauseHotkeyKey { get; set; }
         }
 
         private static async Task UpdateSettingsAsync(HttpListenerRequest request, HttpListenerResponse response)
@@ -249,6 +269,14 @@ namespace NarratorHotkey
                     if (!string.IsNullOrEmpty(model.hotkeyKey))
                     {
                         settings.HotkeyKey = model.hotkeyKey;
+                    }
+                    if (!string.IsNullOrEmpty(model.pauseHotkeyModifier))
+                    {
+                        settings.PauseHotkeyModifier = model.pauseHotkeyModifier;
+                    }
+                    if (!string.IsNullOrEmpty(model.pauseHotkeyKey))
+                    {
+                        settings.PauseHotkeyKey = model.pauseHotkeyKey;
                     }
 
                     settings.Save();
@@ -302,6 +330,20 @@ namespace NarratorHotkey
             await SpeechManager.Instance.StopAsync();
             response.StatusCode = 200;
             response.Close();
+        }
+
+        private static async Task ServePauseStateAsync(HttpListenerResponse response)
+        {
+            string json = JsonSerializer.Serialize(new
+            {
+                isSpeaking = SpeechManager.Instance.IsSpeaking,
+                isPaused = SpeechManager.Instance.IsPaused
+            });
+            byte[] buffer = Encoding.UTF8.GetBytes(json);
+            response.ContentType = "application/json";
+            response.ContentLength64 = buffer.Length;
+            await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+            response.OutputStream.Close();
         }
 
         private static Task HandleClearLogsAsync(HttpListenerResponse response)
@@ -892,7 +934,7 @@ namespace NarratorHotkey
                 </div>
 
                 <div class="form-group">
-                    <label>Windows Global Hotkey</label>
+                    <label>Windows Global Hotkey (Read / Stop)</label>
                     <div style="display: flex; gap: 12px; margin-bottom: 8px;">
                         <select id="hotkeyModSelect" style="flex: 1;">
                             <option value="Control">Control</option>
@@ -909,6 +951,24 @@ namespace NarratorHotkey
                     </div>
                 </div>
 
+                <div class="form-group">
+                    <label>Windows Global Hotkey (Pause / Resume)</label>
+                    <div style="display: flex; gap: 12px; margin-bottom: 8px;">
+                        <select id="pauseHotkeyModSelect" style="flex: 1;">
+                            <option value="Control">Control</option>
+                            <option value="Alt">Alt</option>
+                            <option value="Shift">Shift</option>
+                            <option value="None">None</option>
+                        </select>
+                        <select id="pauseHotkeyKeySelect" style="flex: 1;">
+                            <!-- Populated dynamically in JS -->
+                        </select>
+                    </div>
+                    <div style="font-size: 11px; color: var(--text-muted);">
+                        Holds the reading where it is; press again to carry on. On Linux, map a shortcut to <code>NarratorHotkey --toggle-pause</code>.
+                    </div>
+                </div>
+
                 <div class="actions-bar">
                     <button id="saveBtn" class="btn btn-primary">Save Configuration</button>
                 </div>
@@ -921,6 +981,7 @@ namespace NarratorHotkey
                     <textarea id="testText" placeholder="Type something to hear it...">This is a test of the Narrator Hotkey text to speech system.</textarea>
                     <div class="tester-buttons">
                         <button id="speakBtn" class="btn btn-primary" style="flex: 1;">🔊 Speak</button>
+                        <button id="pauseBtn" class="btn btn-outline">⏸️ Pause</button>
                         <button id="stopBtn" class="btn btn-outline">⏹️ Stop</button>
                     </div>
                 </div>
@@ -957,8 +1018,9 @@ namespace NarratorHotkey
         
         const testText = document.getElementById('testText');
         const speakBtn = document.getElementById('speakBtn');
+        const pauseBtn = document.getElementById('pauseBtn');
         const stopBtn = document.getElementById('stopBtn');
-        
+
         const historyList = document.getElementById('historyList');
         const clearLogsBtn = document.getElementById('clearLogsBtn');
         
@@ -967,18 +1029,22 @@ namespace NarratorHotkey
         const toast = document.getElementById('toast');
         const hotkeyModSelect = document.getElementById('hotkeyModSelect');
         const hotkeyKeySelect = document.getElementById('hotkeyKeySelect');
+        const pauseHotkeyModSelect = document.getElementById('pauseHotkeyModSelect');
+        const pauseHotkeyKeySelect = document.getElementById('pauseHotkeyKeySelect');
 
-        // Populate Hotkey Keys dropdown
+        // Populate Hotkey Keys dropdowns
         const keysList = [
             '1','2','3','4','5','6','7','8','9','0',
             'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
             'F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'
         ];
-        keysList.forEach(k => {
-            const opt = document.createElement('option');
-            opt.value = k;
-            opt.innerText = k;
-            hotkeyKeySelect.appendChild(opt);
+        [hotkeyKeySelect, pauseHotkeyKeySelect].forEach(select => {
+            keysList.forEach(k => {
+                const opt = document.createElement('option');
+                opt.value = k;
+                opt.innerText = k;
+                select.appendChild(opt);
+            });
         });
 
         let currentSettings = {};
@@ -987,20 +1053,30 @@ namespace NarratorHotkey
             rateValue.innerText = e.target.value > 0 ? `+${e.target.value}` : e.target.value;
         });
 
+        // Reflect speaking / paused state in the header badge and the pause button
+        function applyPlaybackState(isSpeaking, isPaused) {
+            if (isPaused) {
+                statusDot.className = 'status-dot';
+                statusText.innerText = 'Paused';
+            } else if (isSpeaking) {
+                statusDot.className = 'status-dot speaking';
+                statusText.innerText = 'Speaking...';
+            } else {
+                statusDot.className = 'status-dot';
+                statusText.innerText = 'Daemon Ready';
+            }
+
+            pauseBtn.innerText = isPaused ? '▶️ Resume' : '⏸️ Pause';
+            pauseBtn.disabled = !isSpeaking && !isPaused;
+        }
+
         // Poll status (speaking status and speech log) every 1 second
         async function pollStatus() {
             try {
                 const res = await fetch(`${API_BASE}/api/status`);
                 const data = await res.json();
-                
-                // Update UI status dot
-                if (data.isSpeaking) {
-                    statusDot.className = 'status-dot speaking';
-                    statusText.innerText = 'Speaking...';
-                } else {
-                    statusDot.className = 'status-dot';
-                    statusText.innerText = 'Daemon Ready';
-                }
+
+                applyPlaybackState(data.isSpeaking, data.isPaused);
 
                 // Render history
                 renderHistory(data.history);
@@ -1027,15 +1103,10 @@ namespace NarratorHotkey
 
                 hotkeyModSelect.value = currentSettings.hotkeyModifier;
                 hotkeyKeySelect.value = currentSettings.hotkeyKey;
+                pauseHotkeyModSelect.value = currentSettings.pauseHotkeyModifier;
+                pauseHotkeyKeySelect.value = currentSettings.pauseHotkeyKey;
 
-                // Update UI status dot
-                if (data.isSpeaking) {
-                    statusDot.className = 'status-dot speaking';
-                    statusText.innerText = 'Speaking...';
-                } else {
-                    statusDot.className = 'status-dot';
-                    statusText.innerText = 'Daemon Ready';
-                }
+                applyPlaybackState(data.isSpeaking, data.isPaused);
 
                 // Render history
                 renderHistory(data.history);
@@ -1148,7 +1219,9 @@ namespace NarratorHotkey
                 speechRate: parseInt(rateSlider.value),
                 enableProgressiveChunking: chunkingSwitch.checked,
                 hotkeyModifier: hotkeyModSelect.value,
-                hotkeyKey: hotkeyKeySelect.value
+                hotkeyKey: hotkeyKeySelect.value,
+                pauseHotkeyModifier: pauseHotkeyModSelect.value,
+                pauseHotkeyKey: pauseHotkeyKeySelect.value
             };
 
             try {
@@ -1196,9 +1269,20 @@ namespace NarratorHotkey
             }
         });
 
+        pauseBtn.addEventListener('click', async () => {
+            try {
+                const res = await fetch(`${API_BASE}/api/toggle-pause`, { method: 'POST' });
+                const state = await res.json();
+                applyPlaybackState(state.isSpeaking, state.isPaused);
+            } catch (err) {
+                console.error('Pause request failed:', err);
+            }
+        });
+
         stopBtn.addEventListener('click', async () => {
             try {
                 await fetch(`${API_BASE}/api/stop`, { method: 'POST' });
+                applyPlaybackState(false, false);
             } catch (err) {
                 console.error('Stop request failed:', err);
             }

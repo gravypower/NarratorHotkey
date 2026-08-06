@@ -99,6 +99,15 @@ namespace NarratorHotkey
                 case "--stop":
                     await SendCommandToDaemonAsync("STOP");
                     break;
+                case "--pause":
+                    await SendCommandToDaemonAsync("PAUSE");
+                    break;
+                case "--resume":
+                    await SendCommandToDaemonAsync("RESUME");
+                    break;
+                case "--toggle-pause":
+                    await SendCommandToDaemonAsync("TOGGLE_PAUSE");
+                    break;
                 case "--set-provider":
                     if (args.Length < 2)
                     {
@@ -178,6 +187,7 @@ namespace NarratorHotkey
 #if WINDOWS
             Console.WriteLine($"  Windows Voice: {settings.SelectedVoice}");
             Console.WriteLine($"  Hotkey:       {settings.HotkeyModifier}+{settings.HotkeyKey}");
+            Console.WriteLine($"  Pause Hotkey: {settings.PauseHotkeyModifier}+{settings.PauseHotkeyKey}");
 #endif
             Console.WriteLine($"  Progressive Chunking: {settings.EnableProgressiveChunking}");
         }
@@ -190,6 +200,9 @@ namespace NarratorHotkey
             Console.WriteLine("  NarratorHotkey --daemon         Starts the background TTS daemon.");
             Console.WriteLine("  NarratorHotkey --settings       Opens the web configuration settings in your browser.");
             Console.WriteLine("  NarratorHotkey --stop           Stops speaking.");
+            Console.WriteLine("  NarratorHotkey --pause          Holds the reading where it is.");
+            Console.WriteLine("  NarratorHotkey --resume         Carries on from where it was paused.");
+            Console.WriteLine("  NarratorHotkey --toggle-pause   Pauses if reading, resumes if paused.");
             Console.WriteLine("  NarratorHotkey --set-provider <P> Set TTS Provider (Kokoro ONNX, Piper).");
             Console.WriteLine("  NarratorHotkey --set-voice <V>  Set Voice for the current provider.");
             Console.WriteLine("  NarratorHotkey --set-rate <R>   Set Speech rate (-10 to 10).");
@@ -305,6 +318,18 @@ namespace NarratorHotkey
                 if (command == "STOP")
                 {
                     response = await client.PostAsync($"http://127.0.0.1:{Port}/api/stop", null);
+                }
+                else if (command == "PAUSE")
+                {
+                    response = await client.PostAsync($"http://127.0.0.1:{Port}/api/pause", null);
+                }
+                else if (command == "RESUME")
+                {
+                    response = await client.PostAsync($"http://127.0.0.1:{Port}/api/resume", null);
+                }
+                else if (command == "TOGGLE_PAUSE")
+                {
+                    response = await client.PostAsync($"http://127.0.0.1:{Port}/api/toggle-pause", null);
                 }
                 else if (command == "RELOAD_SETTINGS")
                 {

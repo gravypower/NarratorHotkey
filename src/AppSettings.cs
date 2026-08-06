@@ -20,6 +20,8 @@ public class AppSettings
     public string KokoroVoice { get; set; } = "af_heart"; // Default Kokoro voice
     public string HotkeyModifier { get; set; } = "Control"; // "Control", "Alt", "Shift", "None"
     public string HotkeyKey { get; set; } = "2"; // Default key
+    public string PauseHotkeyModifier { get; set; } = "Control"; // Pause/resume hotkey
+    public string PauseHotkeyKey { get; set; } = "3";
     public bool EnableProgressiveChunking { get; set; } = true;
 
 
@@ -82,6 +84,8 @@ public class AppSettings
                         this.KokoroVoice = newSettings.KokoroVoice;
                         this.HotkeyModifier = newSettings.HotkeyModifier;
                         this.HotkeyKey = newSettings.HotkeyKey;
+                        this.PauseHotkeyModifier = newSettings.PauseHotkeyModifier;
+                        this.PauseHotkeyKey = newSettings.PauseHotkeyKey;
                         this.EnableProgressiveChunking = newSettings.EnableProgressiveChunking;
 
                         // Migrate "Windows Natural" to "Windows"

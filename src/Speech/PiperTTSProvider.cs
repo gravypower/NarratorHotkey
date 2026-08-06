@@ -24,6 +24,7 @@ namespace NarratorHotkey.Speech
         private volatile bool _isInitialized = false;
         private bool _isSpeaking = false;
         private System.Threading.CancellationTokenSource _playTokenSource;
+        private volatile PlaybackSession _playbackSession;
 
         // Replaced wholesale once the catalogue is downloaded. A shared List that is
         // cleared and refilled can be observed mid-write by another caller, which is
@@ -52,6 +53,8 @@ namespace NarratorHotkey.Speech
         };
 
         public bool IsSpeaking => _isSpeaking;
+
+        public bool IsPaused => _isSpeaking && (_playbackSession?.IsPaused ?? false);
 
         // Progress reporting
         public event Action<string> ProgressChanged;
@@ -221,6 +224,9 @@ namespace NarratorHotkey.Speech
                 return;
 
             _isSpeaking = true;
+            // One session for the whole utterance, so a pause taken during one chunk
+            // still holds the chunks that follow it.
+            _playbackSession = new PlaybackSession();
 
             try
             {
@@ -308,7 +314,23 @@ namespace NarratorHotkey.Speech
         public Task StopAsync()
         {
             _isSpeaking = false;
+            _playbackSession = null;
             _playTokenSource?.Cancel();
+            return Task.CompletedTask;
+        }
+
+        public Task PauseAsync()
+        {
+            if (_isSpeaking)
+            {
+                _playbackSession?.Pause();
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task ResumeAsync()
+        {
+            _playbackSession?.Resume();
             return Task.CompletedTask;
         }
 
@@ -535,7 +557,7 @@ namespace NarratorHotkey.Speech
             _playTokenSource = new System.Threading.CancellationTokenSource();
             try
             {
-                await AudioPlayer.PlayWavAsync(audioData, _playTokenSource.Token);
+                await AudioPlayer.PlayWavAsync(audioData, _playTokenSource.Token, _playbackSession);
             }
             catch (Exception ex)
             {

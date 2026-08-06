@@ -10,24 +10,48 @@ using System.Windows.Automation.Text;
 
 public class HotkeyManager : IMessageFilter
 {
-    private const int HOTKEY_ID = 1;
+    private const int HOTKEY_ID_READ = 1;
+    private const int HOTKEY_ID_PAUSE = 2;
     private const int ERROR_HOTKEY_ALREADY_REGISTERED = 1409;
-    private bool _isRegistered;
-    private readonly Action _onHotkeyTriggered;
+
+    /// <summary>
+    /// One global hotkey: what it is bound to now, and what it does when pressed.
+    /// </summary>
+    private sealed class Binding
+    {
+        public Binding(int id, string description, Action action)
+        {
+            Id = id;
+            Description = description;
+            Action = action;
+        }
+
+        public int Id { get; }
+        public string Description { get; }
+        public Action Action { get; }
+
+        public bool IsRegistered { get; set; }
+
+        // What is currently registered, so a settings save that leaves the hotkey alone
+        // does not tear down and re-register a working binding.
+        public string RegisteredModifier { get; set; }
+        public string RegisteredKey { get; set; }
+    }
+
+    private readonly Binding[] _bindings;
 
     // RegisterHotKey(IntPtr.Zero, ...) is thread-affine: the hotkey belongs to the
     // thread that registered it, and only that thread can unregister it. Everything
     // here must therefore run on the thread that owns the message loop.
     private readonly int _ownerThreadId;
 
-    // What is currently registered, so a settings save that leaves the hotkey alone
-    // does not tear down and re-register a working binding.
-    private string _registeredModifier;
-    private string _registeredKey;
-
-    public HotkeyManager(Action onHotkeyTriggered)
+    public HotkeyManager(Action onHotkeyTriggered, Action onPauseTriggered)
     {
-        _onHotkeyTriggered = onHotkeyTriggered;
+        _bindings = new[]
+        {
+            new Binding(HOTKEY_ID_READ, "read", onHotkeyTriggered),
+            new Binding(HOTKEY_ID_PAUSE, "pause/resume", onPauseTriggered)
+        };
         _ownerThreadId = Environment.CurrentManagedThreadId;
         Application.AddMessageFilter(this);
         RegisterHotKey();
@@ -40,10 +64,14 @@ public class HotkeyManager : IMessageFilter
         if (m.Msg == Interoperability.WM_HOTKEY)
         {
             Console.WriteLine($"[HotkeyManager] Thread-level message received! Msg: {m.Msg:X4}, WParam: {m.WParam.ToInt64():X}, LParam: {m.LParam.ToInt64():X}");
-            if (m.WParam.ToInt32() == HOTKEY_ID)
+            int id = m.WParam.ToInt32();
+            foreach (var binding in _bindings)
             {
-                _onHotkeyTriggered?.Invoke();
-                return true; // Eat the message so other components do not process it
+                if (binding.Id == id)
+                {
+                    binding.Action?.Invoke();
+                    return true; // Eat the message so other components do not process it
+                }
             }
         }
         return false;
@@ -58,35 +86,59 @@ public class HotkeyManager : IMessageFilter
         }
 
         var settings = AppSettings.Load();
-        uint modifier = Interoperability.GetModifierCode(settings.HotkeyModifier);
-        uint key = Interoperability.GetKeyCode(settings.HotkeyKey);
-
-        _isRegistered = Interoperability.RegisterHotKey(
-            IntPtr.Zero,
-            HOTKEY_ID,
-            modifier,
-            key);
-
-        Console.WriteLine($"[HotkeyManager] Thread-level RegisterHotKey result: {_isRegistered} (Modifier: {settings.HotkeyModifier}, Key: {settings.HotkeyKey})");
-
-        if (_isRegistered)
+        foreach (var binding in _bindings)
         {
-            _registeredModifier = settings.HotkeyModifier;
-            _registeredKey = settings.HotkeyKey;
+            if (binding.IsRegistered) continue;
+            var (modifierName, keyName) = BindingFor(binding, settings);
+            Register(binding, modifierName, keyName);
+        }
+    }
+
+    private static (string modifier, string key) BindingFor(Binding binding, AppSettings settings)
+    {
+        return binding.Id == HOTKEY_ID_PAUSE
+            ? (settings.PauseHotkeyModifier, settings.PauseHotkeyKey)
+            : (settings.HotkeyModifier, settings.HotkeyKey);
+    }
+
+    private void Register(Binding binding, string modifierName, string keyName)
+    {
+        if (string.IsNullOrWhiteSpace(keyName))
+        {
+            // No key configured: the binding is simply off.
+            Console.WriteLine($"[HotkeyManager] No key configured for the {binding.Description} hotkey; skipping registration.");
             return;
         }
 
-        _registeredModifier = null;
-        _registeredKey = null;
+        uint modifier = Interoperability.GetModifierCode(modifierName);
+        uint key = Interoperability.GetKeyCode(keyName);
+
+        binding.IsRegistered = Interoperability.RegisterHotKey(
+            IntPtr.Zero,
+            binding.Id,
+            modifier,
+            key);
+
+        Console.WriteLine($"[HotkeyManager] Thread-level RegisterHotKey result for {binding.Description}: {binding.IsRegistered} (Modifier: {modifierName}, Key: {keyName})");
+
+        if (binding.IsRegistered)
+        {
+            binding.RegisteredModifier = modifierName;
+            binding.RegisteredKey = keyName;
+            return;
+        }
+
+        binding.RegisteredModifier = null;
+        binding.RegisteredKey = null;
 
         int error = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
-        Console.WriteLine($"[HotkeyManager] ERROR: Failed to register thread-level hotkey ({settings.HotkeyModifier}+{settings.HotkeyKey}). Win32 error {error}.");
+        Console.WriteLine($"[HotkeyManager] ERROR: Failed to register thread-level {binding.Description} hotkey ({modifierName}+{keyName}). Win32 error {error}.");
 
         string reason = error == ERROR_HOTKEY_ALREADY_REGISTERED
             ? "Another application has already claimed it."
             : $"Windows reported error {error}.";
 
-        MessageBox.Show($"Could not register the hotkey ({settings.HotkeyModifier}+{settings.HotkeyKey}). {reason}",
+        MessageBox.Show($"Could not register the {binding.Description} hotkey ({modifierName}+{keyName}). {reason}",
             "Hotkey Registration Error",
             MessageBoxButtons.OK,
             MessageBoxIcon.Warning);
@@ -94,8 +146,6 @@ public class HotkeyManager : IMessageFilter
 
     public void UnregisterHotKey()
     {
-        if (!_isRegistered) return;
-
         if (!OnOwnerThread)
         {
             // Unregistering from another thread silently does nothing, which would
@@ -104,15 +154,26 @@ public class HotkeyManager : IMessageFilter
             return;
         }
 
-        Interoperability.UnregisterHotKey(IntPtr.Zero, HOTKEY_ID);
-        _isRegistered = false;
-        _registeredModifier = null;
-        _registeredKey = null;
+        foreach (var binding in _bindings)
+        {
+            Unregister(binding);
+        }
+
         try
         {
             Application.RemoveMessageFilter(this);
         }
         catch { }
+    }
+
+    private void Unregister(Binding binding)
+    {
+        if (!binding.IsRegistered) return;
+
+        Interoperability.UnregisterHotKey(IntPtr.Zero, binding.Id);
+        binding.IsRegistered = false;
+        binding.RegisteredModifier = null;
+        binding.RegisteredKey = null;
     }
 
     public void ReloadHotKey()
@@ -124,22 +185,22 @@ public class HotkeyManager : IMessageFilter
         }
 
         var settings = AppSettings.Load();
-        if (_isRegistered &&
-            string.Equals(settings.HotkeyModifier, _registeredModifier, StringComparison.Ordinal) &&
-            string.Equals(settings.HotkeyKey, _registeredKey, StringComparison.Ordinal))
+        foreach (var binding in _bindings)
         {
-            // Saving unrelated settings should not disturb a working binding.
-            Console.WriteLine("[HotkeyManager] Hotkey unchanged; keeping the existing registration.");
-            return;
-        }
+            var (modifierName, keyName) = BindingFor(binding, settings);
 
-        UnregisterHotKey();
-        try
-        {
-            Application.AddMessageFilter(this);
+            if (binding.IsRegistered &&
+                string.Equals(modifierName, binding.RegisteredModifier, StringComparison.Ordinal) &&
+                string.Equals(keyName, binding.RegisteredKey, StringComparison.Ordinal))
+            {
+                // Saving unrelated settings should not disturb a working binding.
+                Console.WriteLine($"[HotkeyManager] The {binding.Description} hotkey is unchanged; keeping the existing registration.");
+                continue;
+            }
+
+            Unregister(binding);
+            Register(binding, modifierName, keyName);
         }
-        catch { }
-        RegisterHotKey();
     }
 
     public static Task<T> RunOnStaThreadAsync<T>(Func<T> func)

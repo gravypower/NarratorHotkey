@@ -19,8 +19,8 @@ namespace NarratorHotkey.Speech
         private readonly object _lock = new object();
 
         // WinRT playback state
-        private System.Media.SoundPlayer _currentPlayer;
         private System.Threading.CancellationTokenSource _playTokenSource;
+        private PlaybackSession _playbackSession;
         private bool _isSpeakingWinRT = false;
         private bool _useWinRT = false;
 
@@ -49,9 +49,36 @@ namespace NarratorHotkey.Speech
                 {
                     return _isSpeakingWinRT;
                 }
-                else
+
+                // A paused synthesizer reports Paused rather than Speaking, so the
+                // prompts still in flight are what say whether an utterance is running.
+                if (_sapiSynthesizer.State == SynthesizerState.Paused)
                 {
-                    return _sapiSynthesizer.State == SynthesizerState.Speaking;
+                    lock (_lock)
+                    {
+                        return _pendingPrompts.Count > 0;
+                    }
+                }
+
+                return _sapiSynthesizer.State == SynthesizerState.Speaking;
+            }
+        }
+
+        public bool IsPaused
+        {
+            get
+            {
+                if (_useWinRT)
+                {
+                    lock (_lock)
+                    {
+                        return _isSpeakingWinRT && (_playbackSession?.IsPaused ?? false);
+                    }
+                }
+
+                lock (_lock)
+                {
+                    return _sapiSynthesizer.State == SynthesizerState.Paused && _pendingPrompts.Count > 0;
                 }
             }
         }
@@ -68,9 +95,12 @@ namespace NarratorHotkey.Speech
 
             if (_useWinRT && _winrtSynthesizer != null)
             {
+                System.Threading.CancellationTokenSource tokenSource;
+                PlaybackSession session;
                 lock (_lock)
                 {
-                    _playTokenSource = new System.Threading.CancellationTokenSource();
+                    tokenSource = _playTokenSource = new System.Threading.CancellationTokenSource();
+                    session = _playbackSession = new PlaybackSession();
                     _isSpeakingWinRT = true;
                 }
 
@@ -78,29 +108,21 @@ namespace NarratorHotkey.Speech
                 {
                     var synthesisStream = await _winrtSynthesizer.SynthesizeTextToStreamAsync(text);
 
-                    if (_playTokenSource.Token.IsCancellationRequested)
+                    if (tokenSource.Token.IsCancellationRequested)
                         return;
 
                     byte[] audioData;
                     using (var netStream = synthesisStream.AsStreamForRead())
                     using (var ms = new MemoryStream())
                     {
-                        await netStream.CopyToAsync(ms, _playTokenSource.Token);
+                        await netStream.CopyToAsync(ms, tokenSource.Token);
                         audioData = ms.ToArray();
                     }
 
-                    lock (_lock)
-                    {
-                        if (_playTokenSource.Token.IsCancellationRequested)
-                            return;
+                    if (tokenSource.Token.IsCancellationRequested)
+                        return;
 
-                        var playStream = new MemoryStream(audioData);
-                        _currentPlayer = new System.Media.SoundPlayer(playStream);
-                        _currentPlayer.Play();
-                    }
-
-                    int durationMs = GetWavDurationMs(audioData);
-                    await Task.Delay(durationMs + 100, _playTokenSource.Token);
+                    await AudioPlayer.PlayWavAsync(audioData, tokenSource.Token, session);
                 }
                 catch (TaskCanceledException)
                 {
@@ -115,8 +137,10 @@ namespace NarratorHotkey.Speech
                     lock (_lock)
                     {
                         _isSpeakingWinRT = false;
-                        _currentPlayer?.Dispose();
-                        _currentPlayer = null;
+                        if (ReferenceEquals(_playbackSession, session))
+                        {
+                            _playbackSession = null;
+                        }
                     }
                 }
             }
@@ -151,20 +175,75 @@ namespace NarratorHotkey.Speech
                 _pendingPrompts.Clear();
                 try
                 {
+                    // A synthesizer left paused stays paused, and the next prompt would
+                    // sit in the queue in silence.
+                    if (_sapiSynthesizer.State == SynthesizerState.Paused)
+                    {
+                        _sapiSynthesizer.Resume();
+                    }
                     _sapiSynthesizer.SpeakAsyncCancelAll();
-                }
-                catch { }
-
-                // WinRT stop
-                _isSpeakingWinRT = false;
-                _playTokenSource?.Cancel();
-                try
-                {
-                    _currentPlayer?.Stop();
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Error stopping SoundPlayer: {ex.Message}");
+                    Console.WriteLine($"Error stopping SAPI speech: {ex.Message}");
+                }
+
+                // WinRT stop
+                _isSpeakingWinRT = false;
+                _playbackSession = null;
+                _playTokenSource?.Cancel();
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task PauseAsync()
+        {
+            lock (_lock)
+            {
+                if (_useWinRT)
+                {
+                    if (_isSpeakingWinRT)
+                    {
+                        _playbackSession?.Pause();
+                    }
+                    return Task.CompletedTask;
+                }
+
+                try
+                {
+                    if (_sapiSynthesizer.State == SynthesizerState.Speaking)
+                    {
+                        _sapiSynthesizer.Pause();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to pause SAPI speech: {ex.Message}");
+                }
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task ResumeAsync()
+        {
+            lock (_lock)
+            {
+                if (_useWinRT)
+                {
+                    _playbackSession?.Resume();
+                    return Task.CompletedTask;
+                }
+
+                try
+                {
+                    if (_sapiSynthesizer.State == SynthesizerState.Paused)
+                    {
+                        _sapiSynthesizer.Resume();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to resume SAPI speech: {ex.Message}");
                 }
             }
             return Task.CompletedTask;
@@ -312,20 +391,5 @@ namespace NarratorHotkey.Speech
         }
 
         public string GetProviderName() => "Windows";
-
-        private int GetWavDurationMs(byte[] wavData)
-        {
-            try
-            {
-                if (wavData == null || wavData.Length < 44) return 0;
-                int byteRate = BitConverter.ToInt32(wavData, 28);
-                if (byteRate <= 0) return 3000;
-                return (int)(((wavData.Length - 44) * 1000L) / byteRate);
-            }
-            catch
-            {
-                return 3000;
-            }
-        }
     }
 }

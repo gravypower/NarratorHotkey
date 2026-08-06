@@ -85,8 +85,20 @@ public class TrayApplication : Form
 
         // Create context menu
         var contextMenu = new ContextMenuStrip();
+        var pauseItem = new ToolStripMenuItem("Pause", null, (s, e) => { _ = TogglePauseAsync(); });
+        contextMenu.Items.Add(pauseItem);
+        contextMenu.Items.Add("Stop", null, (s, e) => { _ = SpeechManager.Instance.StopAsync(); });
+        contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Settings", null, (s, e) => ShowSettings());
         contextMenu.Items.Add("Exit", null, (s, e) => ExitApplication());
+
+        // The one item that changes with what the app is doing, so it is labelled when
+        // the menu opens rather than left saying "Pause" while speech is already held.
+        contextMenu.Opening += (s, e) =>
+        {
+            pauseItem.Text = SpeechManager.Instance.IsPaused ? "Resume" : "Pause";
+            pauseItem.Enabled = SpeechManager.Instance.IsSpeaking;
+        };
 
         trayIcon.ContextMenuStrip = contextMenu;
 
@@ -99,10 +111,10 @@ public class TrayApplication : Form
         // instead of the message-loop thread that owns the hotkey registration.
         _ = this.Handle;
 
-        // Initialize hotkeys with the triggering action
-        _hotkeyManager = new HotkeyManager(() => {
-            _ = ProcessHotkeyAsync();
-        });
+        // Initialize hotkeys with the triggering actions
+        _hotkeyManager = new HotkeyManager(
+            () => { _ = ProcessHotkeyAsync(); },
+            () => { _ = TogglePauseAsync(); });
 
         // Subscribe to settings change notifications
         Program.OnSettingsChanged += ReloadHotkey;
@@ -162,6 +174,19 @@ public class TrayApplication : Form
         catch (Exception ex)
         {
             Console.WriteLine($"Error processing hotkey: {ex.Message}");
+        }
+    }
+
+    private async Task TogglePauseAsync()
+    {
+        try
+        {
+            bool paused = await SpeechManager.Instance.TogglePauseAsync();
+            Console.WriteLine($"[TrayApplication] Speech {(paused ? "paused" : "resumed")}.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error toggling pause: {ex.Message}");
         }
     }
 

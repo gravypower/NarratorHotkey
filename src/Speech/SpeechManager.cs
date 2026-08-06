@@ -63,6 +63,7 @@ namespace NarratorHotkey.Speech
 
         public ITTSProvider CurrentProvider => GetActiveProvider();
         public bool IsSpeaking => GetActiveProvider()?.IsSpeaking ?? false;
+        public bool IsPaused => GetActiveProvider()?.IsPaused ?? false;
 
         private ITTSProvider GetActiveProvider()
         {
@@ -458,6 +459,53 @@ namespace NarratorHotkey.Speech
             {
                 await provider.StopAsync();
             }
+        }
+
+        public async Task PauseAsync()
+        {
+            var provider = GetActiveProvider();
+            if (provider != null)
+            {
+                await provider.PauseAsync();
+            }
+        }
+
+        public async Task ResumeAsync()
+        {
+            var provider = GetActiveProvider();
+            if (provider != null)
+            {
+                await provider.ResumeAsync();
+            }
+        }
+
+        /// <summary>
+        /// Holds speech if it is running, carries on if it is paused. Returns the
+        /// resulting paused state.
+        /// </summary>
+        public async Task<bool> TogglePauseAsync()
+        {
+            var provider = GetActiveProvider();
+            if (provider == null)
+            {
+                return false;
+            }
+
+            if (provider.IsPaused)
+            {
+                await provider.ResumeAsync();
+                return false;
+            }
+
+            if (!provider.IsSpeaking)
+            {
+                // Nothing to hold; leave the state alone rather than arming a pause that
+                // would swallow the start of the next thing spoken.
+                return false;
+            }
+
+            await provider.PauseAsync();
+            return provider.IsPaused;
         }
 
         public async Task<string[]> GetAvailableVoicesAsync()
