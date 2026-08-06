@@ -353,7 +353,7 @@ namespace NarratorHotkey.Speech
                 result = Regex.Replace(result, @"[\r\n\t]+", " ");
 
                 // 4. Break file names and paths into speakable words (e.g. src/Speech/SpeechManager.cs ->
-                //    src slash Speech slash SpeechManager cs). The dot is a full stop but it is not
+                //    src / Speech / SpeechManager cs). The dot is a full stop but it is not
                 //    the end of a sentence, and left in place the phonemizer tries to say the whole
                 //    path as one token. Also catches extensions the rule below misses (.7z).
                 result = TextNormalizer.NormalizeFileReferences(result);
@@ -398,12 +398,30 @@ namespace NarratorHotkey.Speech
                 // 12. Remove emojis and high surrogate characters (which cause TTS crashes or raw hex speak)
                 result = Regex.Replace(result, @"[\uD800-\uDBFF][\uDC00-\uDFFF]", " ");
 
-                // 13. Escape/replace XML-unsafe delimiters to prevent System.Speech SSML interpretation errors
+                // 13. Turn brackets and ellipses into commas. espeak-ng drops ( ) [ ] { } and
+                //     ... without leaving any pause behind, so the aside runs straight into the
+                //     sentence around it and the listener hears one long ungrammatical clause:
+                //     "runs first (only it knows) then" is spoken as "runs first only it knows then".
+                //     A comma is the one mark that survives phonemization as a clause break.
+                //     "3 file(s)" is a plural, not an aside - commas would read it as "3 file, s".
+                result = Regex.Replace(result, @"(?<=\w)\((s|es)\)", "$1");
+
+                result = Regex.Replace(result, @"\s*[\(\[\{]\s*", ", ");
+                result = Regex.Replace(result, @"\s*[\)\]\}]\s*", ", ");
+                //     Step 5 above may already have eaten one dot of an "...", so match two or more.
+                result = Regex.Replace(result, @"\s*(?:…|\.{2,})\s*", ", ");
+
+                //     The aside usually already ends on punctuation - "boundary), then" would
+                //     otherwise become "boundary, , then" - so drop a comma that lands on one.
+                result = Regex.Replace(result, @",\s*(?=[,.;:!?])", "");
+                result = Regex.Replace(result, @"^\s*,\s*|,\s*$", "");
+
+                // 14. Escape/replace XML-unsafe delimiters to prevent System.Speech SSML interpretation errors
                 result = result.Replace("<", " less than ")
                                .Replace(">", " greater than ")
                                .Replace("&", " and ");
 
-                // 14. Clean up excessive whitespace
+                // 15. Clean up excessive whitespace
                 result = Regex.Replace(result, @"\s+", " ").Trim();
 
                 return result;

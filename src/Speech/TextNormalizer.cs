@@ -37,6 +37,21 @@ namespace NarratorHotkey.Speech
             @"(?!\.?\w)",                                // and nothing more of the token
             RegexOptions.Compiled);
 
+        /// <summary>
+        /// A path with no file extension (/azerothcore/env/dist/bin/dbimport,
+        /// C:\Users\aaron\Downloads). Without an extension the rule above never fires,
+        /// so the whole path reaches the phonemizer as one token.
+        /// </summary>
+        private static readonly Regex PathReference = new Regex(
+            @"(?<![\w@%+~.-])" +                                        // not part of a larger token
+            @"(?:" +
+                @"(?:[A-Za-z]:[\\/]|[\\/])(?:" + Segment + @"+[\\/])*" + // drive or leading separator
+                @"|(?:" + Segment + @"+[\\/])+" +                        // or a separator inside the token
+            @")" +
+            Segment + @"+" +                                            // the last part
+            @"(?![\w@%+~-])",                                           // and nothing more of the token
+            RegexOptions.Compiled);
+
         private static readonly Regex Whitespace = new Regex(@"\s+", RegexOptions.Compiled);
 
         // Words that take a full stop without ending the sentence.
@@ -58,26 +73,40 @@ namespace NarratorHotkey.Speech
         /// <summary>
         /// Breaks file names and paths into words the phonemizer can say, instead of
         /// one unpronounceable token: "src/Speech/SpeechManager.cs" becomes
-        /// "src slash Speech slash SpeechManager cs". The dot separating stem from
-        /// extension becomes a word break and is not spoken.
+        /// "src / Speech / SpeechManager cs" and "/azerothcore/env/dist/bin/dbimport"
+        /// becomes "/ azerothcore / env / dist / bin / dbimport". Each separator is
+        /// left in place with a space either side, so the parts are read as separate
+        /// words. The dot separating stem from extension becomes a word break and is
+        /// not spoken.
         /// </summary>
         public static string NormalizeFileReferences(string text)
         {
             if (string.IsNullOrEmpty(text))
                 return text ?? string.Empty;
 
-            return FileReference.Replace(text, match =>
-            {
-                string spoken = match.Value
-                    .Replace('\\', '/')
-                    .Replace("/", " slash ")
-                    .Replace(":", " colon ")
-                    .Replace(".", " ");
+            // File names first: only that rule knows which dot is an extension. What it
+            // leaves behind is a path with no extension for the second rule to space out.
+            string result = FileReference.Replace(text, match => Spoken(match.Value, dropDots: true));
+            return PathReference.Replace(result, match => Spoken(match.Value, dropDots: false));
+        }
 
-                // The match already sits on token boundaries, so no padding is needed -
-                // padding would only push a space in front of a following comma or stop.
-                return Whitespace.Replace(spoken, " ").Trim();
-            });
+        /// <summary>
+        /// Spaces out the separators of a matched path. Dots are dropped only for a file
+        /// name, where the dot is an extension boundary rather than part of a directory.
+        /// </summary>
+        private static string Spoken(string reference, bool dropDots)
+        {
+            string spoken = reference
+                .Replace('\\', '/')
+                .Replace("/", " / ")
+                .Replace(":", " colon ");
+
+            if (dropDots)
+                spoken = spoken.Replace(".", " ");
+
+            // The match already sits on token boundaries, so no padding is needed -
+            // padding would only push a space in front of a following comma or stop.
+            return Whitespace.Replace(spoken, " ").Trim();
         }
 
         /// <summary>
