@@ -13,6 +13,11 @@ namespace NarratorHotkey
         private static HttpListener _listener;
         private static bool _isRunning;
 
+        private static readonly JsonSerializerOptions CamelCase = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
+
         public static void Start(int port)
         {
             if (_isRunning) return;
@@ -220,7 +225,8 @@ namespace NarratorHotkey
             }
 
             string[] voices = await SpeechManager.Instance.GetVoicesForProviderAsync(provider);
-            string json = JsonSerializer.Serialize(voices);
+            var described = VoiceCatalogue.Describe(provider, voices);
+            string json = JsonSerializer.Serialize(described, CamelCase);
             byte[] buffer = Encoding.UTF8.GetBytes(json);
             response.ContentType = "application/json";
             response.ContentLength64 = buffer.Length;
@@ -584,6 +590,196 @@ namespace NarratorHotkey
             box-shadow: 0 0 10px var(--primary-glow);
         }
 
+        /* Voice Picker */
+        .voice-picker {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .voice-current {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            background: rgba(139, 92, 246, 0.1);
+            border: 1px solid var(--primary);
+            border-radius: 12px;
+            padding: 10px 14px;
+        }
+
+        .voice-current-name {
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .voice-current-meta {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .voice-search {
+            width: 100%;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px 16px;
+            color: var(--text-main);
+            font-family: inherit;
+            font-size: 15px;
+            outline: none;
+            transition: all 0.3s;
+        }
+
+        .voice-search:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 10px var(--primary-glow);
+        }
+
+        .voice-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .voice-toggle {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .voice-toggle input {
+            accent-color: var(--primary);
+            cursor: pointer;
+        }
+
+        .voice-list {
+            max-height: 260px;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: rgba(10, 11, 18, 0.4);
+            outline: none;
+        }
+
+        .voice-list::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .voice-list::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .voice-list::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 10px;
+        }
+
+        .voice-group {
+            position: sticky;
+            top: 0;
+            background: #12141f;
+            padding: 8px 14px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .voice-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 9px 14px;
+            cursor: pointer;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            transition: background 0.15s;
+        }
+
+        .voice-row:last-child {
+            border-bottom: none;
+        }
+
+        .voice-row:hover,
+        .voice-row.cursor {
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .voice-row.cursor {
+            box-shadow: inset 2px 0 0 var(--secondary);
+        }
+
+        .voice-row.selected {
+            background: rgba(139, 92, 246, 0.15);
+            box-shadow: inset 2px 0 0 var(--primary);
+        }
+
+        .voice-row-main {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            min-width: 0;
+        }
+
+        .voice-name {
+            font-size: 14px;
+        }
+
+        .voice-badge {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .voice-badge.ready {
+            background: rgba(16, 185, 129, 0.15);
+            color: #6ee7b7;
+        }
+
+        .voice-badge.download {
+            background: rgba(59, 130, 246, 0.15);
+            color: #93c5fd;
+            text-transform: none;
+        }
+
+        .voice-play {
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 12px;
+            padding: 4px 9px;
+            flex-shrink: 0;
+            transition: all 0.2s;
+        }
+
+        .voice-play:hover {
+            border-color: var(--primary);
+            color: var(--text-main);
+        }
+
+        .voice-empty {
+            padding: 20px;
+            text-align: center;
+            font-size: 14px;
+            color: var(--text-muted);
+        }
+
         /* Sliders */
         .slider-container {
             display: flex;
@@ -906,10 +1102,28 @@ namespace NarratorHotkey
                 </div>
 
                 <div class="form-group">
-                    <label for="voiceSelect">Voice Model</label>
-                    <select id="voiceSelect">
-                        <!-- Loaded dynamically -->
-                    </select>
+                    <label for="voiceSearch">Voice Model</label>
+                    <div class="voice-picker">
+                        <div class="voice-current">
+                            <div>
+                                <div id="voiceCurrentName" class="voice-current-name">-</div>
+                                <div id="voiceCurrentMeta" class="voice-current-meta"></div>
+                            </div>
+                            <button id="voicePreviewCurrent" class="voice-play" title="Hear this voice">▶</button>
+                        </div>
+                        <input type="text" id="voiceSearch" class="voice-search" autocomplete="off"
+                               placeholder="Search by name, language or quality...">
+                        <div class="voice-toolbar">
+                            <label class="voice-toggle">
+                                <input type="checkbox" id="voiceDownloadedOnly">
+                                <span>Downloaded only</span>
+                            </label>
+                            <span id="voiceCount" class="voice-count"></span>
+                        </div>
+                        <div id="voiceList" class="voice-list" tabindex="-1">
+                            <!-- Loaded dynamically -->
+                        </div>
+                    </div>
                 </div>
 
                 <div class="form-group">
@@ -1010,7 +1224,13 @@ namespace NarratorHotkey
 
         // Dom Elements
         const providersList = document.getElementById('providersList');
-        const voiceSelect = document.getElementById('voiceSelect');
+        const voiceSearch = document.getElementById('voiceSearch');
+        const voiceList = document.getElementById('voiceList');
+        const voiceCount = document.getElementById('voiceCount');
+        const voiceDownloadedOnly = document.getElementById('voiceDownloadedOnly');
+        const voiceCurrentName = document.getElementById('voiceCurrentName');
+        const voiceCurrentMeta = document.getElementById('voiceCurrentMeta');
+        const voicePreviewCurrent = document.getElementById('voicePreviewCurrent');
         const rateSlider = document.getElementById('rateSlider');
         const rateValue = document.getElementById('rateValue');
         const chunkingSwitch = document.getElementById('chunkingSwitch');
@@ -1162,31 +1382,232 @@ namespace NarratorHotkey
             }
         }
 
+        // --- Voice picker -------------------------------------------------------
+        // Piper alone offers about 170 voices, so the list is searched and grouped by
+        // language rather than scrolled.
+        let allVoices = [];
+        let visibleVoices = [];
+        let selectedVoiceId = null;
+        let cursorIndex = -1;
+
+        function configuredVoiceFor(provider) {
+            if (provider === 'Piper') return currentSettings.piperVoice;
+            if (provider === 'Kokoro ONNX') return currentSettings.kokoroVoice;
+            return currentSettings.selectedVoice;
+        }
+
         async function loadVoices(provider) {
             try {
                 const res = await fetch(`${API_BASE}/api/voices?provider=${encodeURIComponent(provider)}`);
-                const voices = await res.json();
-                
-                voiceSelect.innerHTML = '';
-                voices.forEach(voice => {
-                    const opt = document.createElement('option');
-                    opt.value = voice;
-                    opt.innerText = voice;
-                    voiceSelect.appendChild(opt);
-                });
+                allVoices = await res.json();
 
-                // Set selected voice
-                let currentVoice = currentSettings.selectedVoice;
-                if (provider === 'Piper') currentVoice = currentSettings.piperVoice;
-                else if (provider === 'Kokoro ONNX') currentVoice = currentSettings.kokoroVoice;
+                // Keep whatever is configured even if the catalogue no longer lists it,
+                // so opening the page cannot quietly change the voice on save.
+                selectedVoiceId = configuredVoiceFor(provider) || (allVoices[0] || {}).id || null;
 
-                if (voices.includes(currentVoice)) {
-                    voiceSelect.value = currentVoice;
-                }
+                voiceSearch.value = '';
+                cursorIndex = -1;
+                renderVoices();
+                renderCurrentVoice();
             } catch (err) {
                 console.error('Failed to load voices:', err);
             }
         }
+
+        function findVoice(id) {
+            return allVoices.find(v => v.id === id) || null;
+        }
+
+        function matchesQuery(voice, terms) {
+            if (!terms.length) return true;
+            const haystack = [voice.name, voice.id, voice.group, voice.keywords]
+                .concat(voice.tags || [])
+                .join(' ')
+                .toLowerCase();
+            return terms.every(term => haystack.includes(term));
+        }
+
+        function badge(text, extraClass) {
+            const el = document.createElement('span');
+            el.className = 'voice-badge' + (extraClass ? ' ' + extraClass : '');
+            el.innerText = text;
+            return el;
+        }
+
+        function buildVoiceRow(voice, index) {
+            const row = document.createElement('div');
+            row.className = 'voice-row' + (voice.id === selectedVoiceId ? ' selected' : '');
+            row.dataset.index = index;
+
+            const main = document.createElement('div');
+            main.className = 'voice-row-main';
+
+            const name = document.createElement('span');
+            name.className = 'voice-name';
+            name.innerText = voice.name || voice.id;
+            main.appendChild(name);
+
+            (voice.tags || []).forEach(tag => main.appendChild(badge(tag)));
+            main.appendChild(voice.downloaded
+                ? badge('ready', 'ready')
+                : badge('downloads on first use', 'download'));
+
+            const play = document.createElement('button');
+            play.className = 'voice-play';
+            play.innerText = '▶';
+            play.title = 'Hear this voice';
+            play.addEventListener('click', (e) => {
+                e.stopPropagation(); // previewing is not choosing
+                previewVoice(voice);
+            });
+
+            row.appendChild(main);
+            row.appendChild(play);
+            row.addEventListener('click', () => selectVoice(voice.id));
+            return row;
+        }
+
+        function renderVoices() {
+            const terms = voiceSearch.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+            const downloadedOnly = voiceDownloadedOnly.checked;
+            const matches = allVoices.filter(v => matchesQuery(v, terms) && (!downloadedOnly || v.downloaded));
+
+            const groups = new Map();
+            matches.forEach(v => {
+                if (!groups.has(v.group)) groups.set(v.group, []);
+                groups.get(v.group).push(v);
+            });
+
+            // The language of the current voice leads, so the choice in force is never
+            // buried under a dozen other languages.
+            const selectedGroup = (findVoice(selectedVoiceId) || {}).group;
+            const headings = [...groups.keys()].sort((a, b) => {
+                if (a === selectedGroup) return -1;
+                if (b === selectedGroup) return 1;
+                return a.localeCompare(b);
+            });
+
+            voiceList.innerHTML = '';
+            visibleVoices = [];
+
+            headings.forEach(heading => {
+                const title = document.createElement('div');
+                title.className = 'voice-group';
+                title.innerText = heading;
+                voiceList.appendChild(title);
+
+                groups.get(heading).forEach(voice => {
+                    voiceList.appendChild(buildVoiceRow(voice, visibleVoices.length));
+                    visibleVoices.push(voice);
+                });
+            });
+
+            if (!matches.length) {
+                const empty = document.createElement('div');
+                empty.className = 'voice-empty';
+                empty.innerText = !allVoices.length
+                    ? 'This engine reported no voices.'
+                    : downloadedOnly
+                        ? 'No downloaded voices match. Clear the filter to see the rest.'
+                        : 'No voices match that search.';
+                voiceList.appendChild(empty);
+            }
+
+            voiceCount.innerText = matches.length === allVoices.length
+                ? `${allVoices.length} voices`
+                : `${matches.length} of ${allVoices.length} voices`;
+
+            if (cursorIndex >= visibleVoices.length) cursorIndex = visibleVoices.length - 1;
+            paintCursor();
+        }
+
+        function renderCurrentVoice() {
+            const voice = findVoice(selectedVoiceId);
+            voiceCurrentName.innerText = voice ? (voice.name || voice.id) : (selectedVoiceId || '-');
+
+            if (!voice) {
+                voiceCurrentMeta.innerText = selectedVoiceId
+                    ? 'Not in this engine’s catalogue'
+                    : '';
+                return;
+            }
+
+            const parts = [voice.group].concat(voice.tags || []);
+            if (!voice.downloaded) parts.push('downloads on first use');
+            voiceCurrentMeta.innerText = parts.join(' · ');
+        }
+
+        function selectVoice(id) {
+            selectedVoiceId = id;
+            renderVoices();
+            renderCurrentVoice();
+        }
+
+        function paintCursor() {
+            voiceList.querySelectorAll('.voice-row').forEach(row => {
+                const isCursor = Number(row.dataset.index) === cursorIndex;
+                row.classList.toggle('cursor', isCursor);
+                if (isCursor) row.scrollIntoView({ block: 'nearest' });
+            });
+        }
+
+        function moveCursor(delta) {
+            if (!visibleVoices.length) return;
+            cursorIndex = cursorIndex < 0
+                ? (delta > 0 ? 0 : visibleVoices.length - 1)
+                : Math.min(visibleVoices.length - 1, Math.max(0, cursorIndex + delta));
+            paintCursor();
+        }
+
+        async function previewVoice(voice) {
+            if (!voice) return;
+            if (!voice.downloaded) {
+                showToast(`Fetching the ${voice.name} model, this can take a moment...`);
+            }
+            try {
+                await fetch(`${API_BASE}/api/speak`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: `This is ${voice.name}. The quick brown fox jumps over the lazy dog.`,
+                        ttsProvider: currentSettings.ttsProvider,
+                        voice: voice.id
+                    })
+                });
+            } catch (err) {
+                console.error('Preview failed:', err);
+            }
+        }
+
+        voiceSearch.addEventListener('input', () => {
+            cursorIndex = -1;
+            renderVoices();
+        });
+
+        voiceSearch.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                moveCursor(1);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                moveCursor(-1);
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                const voice = visibleVoices[cursorIndex] || visibleVoices[0];
+                if (voice) selectVoice(voice.id);
+            } else if (e.key === 'Escape') {
+                voiceSearch.value = '';
+                cursorIndex = -1;
+                renderVoices();
+            }
+        });
+
+        voiceDownloadedOnly.addEventListener('change', () => {
+            cursorIndex = -1;
+            renderVoices();
+        });
+
+        voicePreviewCurrent.addEventListener('click', () => previewVoice(findVoice(selectedVoiceId)));
 
         function renderHistory(logs) {
             historyList.innerHTML = '';
@@ -1215,7 +1636,7 @@ namespace NarratorHotkey
         saveBtn.addEventListener('click', async () => {
             const payload = {
                 ttsProvider: currentSettings.ttsProvider,
-                voice: voiceSelect.value,
+                voice: selectedVoiceId,
                 speechRate: parseInt(rateSlider.value),
                 enableProgressiveChunking: chunkingSwitch.checked,
                 hotkeyModifier: hotkeyModSelect.value,
@@ -1258,10 +1679,10 @@ namespace NarratorHotkey
                 await fetch(`${API_BASE}/api/speak`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
+                    body: JSON.stringify({
                         text,
                         ttsProvider: currentSettings.ttsProvider,
-                        voice: voiceSelect.value
+                        voice: selectedVoiceId
                     })
                 });
             } catch (err) {

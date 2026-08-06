@@ -388,6 +388,15 @@ namespace NarratorHotkey.Speech
             _currentVoiceName = DefaultVoiceName;
         }
 
+        /// <summary>
+        /// Whether the voice can be spoken without downloading a model first. Used by
+        /// the settings page to warn before a pick that costs a download.
+        /// </summary>
+        public bool IsVoiceDownloaded(string voiceName)
+        {
+            return !string.IsNullOrWhiteSpace(voiceName) && IsModelCached(voiceName);
+        }
+
         private bool IsModelCached(string voiceName)
         {
             if (string.IsNullOrEmpty(_piperDir))
