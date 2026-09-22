@@ -114,7 +114,7 @@ namespace NarratorHotkey
                         Console.WriteLine("Error: Please specify provider name.");
                         return;
                     }
-                    SetSetting(s => s.TTSProvider = args[1]);
+                    await SetSettingAsync(s => s.TTSProvider = args[1]);
                     Console.WriteLine($"TTS Provider set to {args[1]}");
                     break;
                 case "--set-voice":
@@ -123,7 +123,7 @@ namespace NarratorHotkey
                         Console.WriteLine("Error: Please specify voice name.");
                         return;
                     }
-                    SetSetting(s => {
+                    await SetSettingAsync(s => {
                         var prov = s.TTSProvider;
                         if (prov == "Piper") s.PiperVoice = args[1];
                         else if (prov == "Kokoro ONNX") s.KokoroVoice = args[1];
@@ -137,7 +137,7 @@ namespace NarratorHotkey
                         Console.WriteLine("Error: Please specify an integer rate (-10 to 10).");
                         return;
                     }
-                    SetSetting(s => s.SpeechRate = rate);
+                    await SetSettingAsync(s => s.SpeechRate = rate);
                     Console.WriteLine($"Speech rate set to {rate}");
                     break;
                 case "--list-voices":
@@ -166,14 +166,16 @@ namespace NarratorHotkey
             }
         }
 
-        private static void SetSetting(Action<AppSettings> updateAction)
+        private static async Task SetSettingAsync(Action<AppSettings> updateAction)
         {
             var settings = AppSettings.Load();
             updateAction(settings);
             settings.Save();
-            
-            // Notify daemon if running
-            _ = SendCommandToDaemonAsync("RELOAD_SETTINGS");
+
+            // Awaited: the process exits as soon as this returns, which would otherwise
+            // drop the request before it reached the daemon. A failure only means no
+            // daemon is running, and it reads the file when it next starts.
+            await SendCommandToDaemonAsync("RELOAD_SETTINGS");
         }
 
         private static void ShowStatus()
@@ -333,7 +335,7 @@ namespace NarratorHotkey
                 }
                 else if (command == "RELOAD_SETTINGS")
                 {
-                    response = await client.PostAsync($"http://127.0.0.1:{Port}/api/settings", null);
+                    response = await client.PostAsync($"http://127.0.0.1:{Port}/api/reload", null);
                 }
                 else if (command.StartsWith("SPEAK:"))
                 {

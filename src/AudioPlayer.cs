@@ -321,8 +321,9 @@ namespace NarratorHotkey
                         Arguments = $"\"{tempFile}\"",
                         UseShellExecute = false,
                         CreateNoWindow = true,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true
+                        // Unread pipes can fill and stall the player; see ProcessWaveClip.
+                        RedirectStandardOutput = false,
+                        RedirectStandardError = false
                     };
 
                     using var process = Process.Start(psi);
@@ -693,8 +694,10 @@ namespace NarratorHotkey
                     Arguments = $"\"{_file}\"",
                     UseShellExecute = false,
                     CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
+                    // Not redirected: nothing reads the pipes, and a player that filled
+                    // one would block and never finish. Its errors reach our log instead.
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = false
                 };
 
                 _process = Process.Start(psi);
