@@ -127,7 +127,7 @@ namespace NarratorHotkey.Speech
                 // PiperDownloader downloads to {_piperDir}/piper/piper.exe
                 bool isWindows = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows);
                 
-                if (!isWindows && CommandExists("piper"))
+                if (!isWindows && Platform.CommandExists("piper"))
                 {
                     _piperExePath = "piper";
                     ReportProgress("Using system-wide Piper executable");
@@ -535,29 +535,6 @@ namespace NarratorHotkey.Speech
             {
                 AnnounceError($"Failed to download model {voiceName}: {ex.Message}");
                 return null;
-            }
-        }
-
-        private static bool CommandExists(string command)
-        {
-            try
-            {
-                var psi = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "which",
-                    Arguments = command,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                using var process = System.Diagnostics.Process.Start(psi);
-                process?.WaitForExit();
-                return process?.ExitCode == 0;
-            }
-            catch
-            {
-                return false;
             }
         }
 

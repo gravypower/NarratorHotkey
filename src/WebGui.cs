@@ -12,6 +12,7 @@ namespace NarratorHotkey
     {
         private static HttpListener _listener;
         private static bool _isRunning;
+        private static int _port;
 
         private static readonly JsonSerializerOptions CamelCase = new JsonSerializerOptions
         {
@@ -22,6 +23,7 @@ namespace NarratorHotkey
         {
             if (_isRunning) return;
             _isRunning = true;
+            _port = port;
 
             try
             {
@@ -74,14 +76,11 @@ namespace NarratorHotkey
             var request = context.Request;
             var response = context.Response;
 
-            // Enable CORS
-            response.Headers.Add("Access-Control-Allow-Origin", "*");
-            response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-            response.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
-
-            if (request.HttpMethod == "OPTIONS")
+            // No CORS headers: the page is served from this origin, so it never needs
+            // them, and granting them would let any website read the speech history.
+            if (!IsTrustedRequest(request))
             {
-                response.StatusCode = 200;
+                response.StatusCode = 403;
                 response.Close();
                 return;
             }
@@ -109,6 +108,10 @@ namespace NarratorHotkey
                 else if (path == "/api/settings" && request.HttpMethod == "POST")
                 {
                     await UpdateSettingsAsync(request, response);
+                }
+                else if (path == "/api/reload" && request.HttpMethod == "POST")
+                {
+                    await HandleReloadAsync(response);
                 }
                 else if (path == "/api/speak" && request.HttpMethod == "POST")
                 {
@@ -149,6 +152,50 @@ namespace NarratorHotkey
                 response.StatusCode = 500;
                 response.Close();
             }
+        }
+
+        /// <summary>
+        /// Rejects requests that did not come from this page or a local client.
+        /// </summary>
+        /// <remarks>
+        /// Without CORS headers a foreign page cannot read responses, but it can still
+        /// send a simple POST (a form, or fetch in no-cors mode) that changes settings
+        /// or starts speech. Browsers mark those with Origin and Sec-Fetch-Site; the
+        /// CLI sends neither. The Host check stops DNS rebinding, where a foreign name
+        /// is pointed at 127.0.0.1 so the browser treats this server as same-origin.
+        /// </remarks>
+        private static bool IsTrustedRequest(HttpListenerRequest request)
+        {
+            string host = request.Headers["Host"];
+            if (host != null && !IsLocalAuthority(host))
+            {
+                return false;
+            }
+
+            string origin = request.Headers["Origin"];
+            if (origin != null)
+            {
+                if (!Uri.TryCreate(origin, UriKind.Absolute, out var originUri)
+                    || originUri.Scheme != Uri.UriSchemeHttp
+                    || !IsLocalAuthority(originUri.Authority))
+                {
+                    return false;
+                }
+            }
+
+            string fetchSite = request.Headers["Sec-Fetch-Site"];
+            if (fetchSite != null && fetchSite != "same-origin" && fetchSite != "none")
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsLocalAuthority(string authority)
+        {
+            return string.Equals(authority, $"127.0.0.1:{_port}", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(authority, $"localhost:{_port}", StringComparison.OrdinalIgnoreCase);
         }
 
         private static async Task ServeHtmlAsync(HttpListenerResponse response)
@@ -238,8 +285,9 @@ namespace NarratorHotkey
         {
             public string ttsProvider { get; set; }
             public string voice { get; set; }
-            public int speechRate { get; set; }
-            public bool enableProgressiveChunking { get; set; }
+            // Nullable so a partial update leaves these alone instead of zeroing them.
+            public int? speechRate { get; set; }
+            public bool? enableProgressiveChunking { get; set; }
             public string hotkeyModifier { get; set; }
             public string hotkeyKey { get; set; }
             public string pauseHotkeyModifier { get; set; }
@@ -266,8 +314,14 @@ namespace NarratorHotkey
                         else if (settings.TTSProvider == "Kokoro ONNX") settings.KokoroVoice = model.voice;
                         else settings.SelectedVoice = model.voice;
                     }
-                    settings.SpeechRate = model.speechRate;
-                    settings.EnableProgressiveChunking = model.enableProgressiveChunking;
+                    if (model.speechRate.HasValue)
+                    {
+                        settings.SpeechRate = model.speechRate.Value;
+                    }
+                    if (model.enableProgressiveChunking.HasValue)
+                    {
+                        settings.EnableProgressiveChunking = model.enableProgressiveChunking.Value;
+                    }
                     if (!string.IsNullOrEmpty(model.hotkeyModifier))
                     {
                         settings.HotkeyModifier = model.hotkeyModifier;
@@ -295,6 +349,18 @@ namespace NarratorHotkey
                 }
             }
 
+            response.StatusCode = 200;
+            response.Close();
+        }
+
+        /// <summary>
+        /// Picks up a settings file changed by someone else, such as the CLI's --set-*
+        /// commands, without writing anything back.
+        /// </summary>
+        private static async Task HandleReloadAsync(HttpListenerResponse response)
+        {
+            Program.NotifySettingsChanged();
+            await SpeechManager.Instance.ApplySettingsAsync();
             response.StatusCode = 200;
             response.Close();
         }

@@ -321,8 +321,9 @@ namespace NarratorHotkey
                         Arguments = $"\"{tempFile}\"",
                         UseShellExecute = false,
                         CreateNoWindow = true,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true
+                        // Unread pipes can fill and stall the player; see ProcessWaveClip.
+                        RedirectStandardOutput = false,
+                        RedirectStandardError = false
                     };
 
                     using var process = Process.Start(psi);
@@ -365,35 +366,12 @@ namespace NarratorHotkey
             string[] players = { "paplay", "pw-play", "aplay" };
             foreach (var player in players)
             {
-                if (CommandExists(player))
+                if (Platform.CommandExists(player))
                 {
                     return player;
                 }
             }
             return null;
-        }
-
-        private static bool CommandExists(string command)
-        {
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "which",
-                    Arguments = command,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                using var process = Process.Start(psi);
-                process?.WaitForExit();
-                return process?.ExitCode == 0;
-            }
-            catch
-            {
-                return false;
-            }
         }
 
         internal static void TryDeleteFile(string path)
@@ -716,8 +694,10 @@ namespace NarratorHotkey
                     Arguments = $"\"{_file}\"",
                     UseShellExecute = false,
                     CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
+                    // Not redirected: nothing reads the pipes, and a player that filled
+                    // one would block and never finish. Its errors reach our log instead.
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = false
                 };
 
                 _process = Process.Start(psi);

@@ -1,0 +1,22 @@
+[Unit]
+Description=NarratorHotkey text-to-speech daemon
+Documentation=https://github.com/gravypower/NarratorHotkey
+
+[Service]
+Type=simple
+# @INSTALL_DIR@ is substituted by install.sh.
+ExecStart=@INSTALL_DIR@/NarratorHotkey --daemon
+Restart=on-failure
+RestartSec=2
+
+# The daemon exits straight away if another instance already holds the lock, so a
+# restart loop against a running tray/daemon is not possible. Give up if it does
+# fail repeatedly rather than respawning forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Install]
+# default.target rather than graphical-session.target: the latter is only reached
+# once a desktop environment binds it, and several session managers never do.
+# Audio does not need to be up at start, only when something is spoken.
+WantedBy=default.target

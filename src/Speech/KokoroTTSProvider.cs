@@ -6,8 +6,8 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using SherpaOnnx;
-using SharpCompress.Archives;
 using SharpCompress.Common;
+using SharpCompress.Readers;
 
 namespace NarratorHotkey.Speech
 {
@@ -168,13 +168,16 @@ namespace NarratorHotkey.Speech
             {
                 try
                 {
-                    using (var archive = ArchiveFactory.Open(archivePath))
+                    // A forward-only reader: SharpCompress's archive API cannot open a
+                    // compressed tar, only the streaming one can.
+                    using (var stream = File.OpenRead(archivePath))
+                    using (var reader = ReaderFactory.OpenReader(stream, new ReaderOptions()))
                     {
-                        foreach (var entry in archive.Entries)
+                        while (reader.MoveToNextEntry())
                         {
-                            if (!entry.IsDirectory)
+                            if (!reader.Entry.IsDirectory)
                             {
-                                entry.WriteToDirectory(_kokoroDir, new ExtractionOptions()
+                                reader.WriteEntryToDirectory(_kokoroDir, new ExtractionOptions()
                                 {
                                     ExtractFullPath = true,
                                     Overwrite = true

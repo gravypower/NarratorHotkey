@@ -24,12 +24,13 @@
 
     <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0'">
         <OutputType>Exe</OutputType>
-        <RuntimeFrameworkVersion>10.0.0-preview.7.25380.108</RuntimeFrameworkVersion>
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="org.k2fsa.sherpa.onnx" Version="*" />
-        <PackageReference Include="PiperSharp" Version="1.0.6" />
+        <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.8" />
+        <!-- 1.0.7 or later: earlier versions pull in SharpCompress 0.36.0, which is open
+             to path traversal on extraction (GHSA-6c8g-7p36-r338). -->
+        <PackageReference Include="PiperSharp" Version="1.0.7" />
     </ItemGroup>
 
     <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
