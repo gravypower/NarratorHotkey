@@ -82,7 +82,7 @@ narratorhotkey --daemon         # run the daemon in the foreground
 ## Voices
 
 `Kokoro ONNX` is the default on Linux; a saved `Windows` provider is remapped to it
-automatically. The first spoken text downloads the model (~80MB) to
+automatically. The first spoken text downloads the model (~350MB) to
 `~/.config/NarratorHotkey/Kokoro`, so the first press is slow and needs a network
 connection.
 

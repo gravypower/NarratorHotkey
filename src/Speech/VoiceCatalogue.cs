@@ -33,7 +33,7 @@ namespace NarratorHotkey.Speech
 
         /// <summary>
         /// False when choosing the voice would download a model first. Only Piper
-        /// fetches a model per voice, so everything else reports true.
+        /// fetches a model per voice; Kokoro's voices all come with its one model.
         /// </summary>
         public bool Downloaded { get; set; }
     }

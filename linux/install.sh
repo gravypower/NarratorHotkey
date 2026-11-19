@@ -311,6 +311,6 @@ Done. Settings page:  $BIN_LINK --settings
 Current config:       $BIN_LINK --status
 Voices:               $BIN_LINK --list-voices
 
-The first spoken text downloads the Kokoro model (~80MB), so expect a delay.
+The first spoken text downloads the Kokoro model (~350MB), so expect a delay.
 
 EOF

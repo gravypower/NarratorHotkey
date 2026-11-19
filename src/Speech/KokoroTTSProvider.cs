@@ -12,38 +12,52 @@ using SharpCompress.Readers;
 namespace NarratorHotkey.Speech
 {
     /// <summary>
-    /// TTS provider using Kokoro ONNX model via sherpa-onnx, supporting low-latency progressive chunking.
+    /// TTS provider using the Kokoro v1.0 ONNX model via sherpa-onnx, supporting low-latency progressive chunking.
     /// </summary>
     public class KokoroTTSProvider : ITTSProvider
     {
+        // The multi-language v1.0 model. Only its English voices are offered: the
+        // others need their own language front end to read anything but English text.
+        private const string ModelName = "kokoro-multi-lang-v1_0";
+        private const string ModelUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/" + ModelName + ".tar.bz2";
+
+        // The model this replaced. Removed once the new one is working.
+        private const string LegacyModelName = "kokoro-en-v0_19";
+
+        private const string DefaultVoice = "af_heart";
+        private const string AmericanLexicon = "lexicon-us-en.txt";
+        private const string BritishLexicon = "lexicon-gb-en.txt";
+
+        // A voice's position here is its speaker id in the model's voices.bin, so the
+        // order must not change. These are the first 28 of the model's speakers.
+        private static readonly string[] Voices = new[]
+        {
+            "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore",
+            "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+            "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael",
+            "am_onyx", "am_puck", "am_santa",
+            "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+            "bm_daniel", "bm_fable", "bm_george", "bm_lewis"
+        };
+
         private readonly AppSettings _settings;
         private string _kokoroDir;
         private string _modelDir;
-        private string _modelPath;
-        private OfflineTts _tts;
-        private string _currentVoiceName = "af_heart";
+        private string _currentVoiceName = DefaultVoice;
         private float _currentRate = 1.0f;
-        private volatile bool _isInitialized = false;
         private bool _isSpeaking = false;
         private System.Threading.CancellationTokenSource _playTokenSource;
         private PlaybackSession _playbackSession;
         private readonly object _lock = new object();
         private readonly System.Threading.SemaphoreSlim _initLock = new(1, 1);
 
-        private static readonly string[] PresetVoices = new[]
-        {
-            "af_heart",
-            "af_bella",
-            "af_nicole",
-            "af_sarah",
-            "af_sky",
-            "am_adam",
-            "am_michael",
-            "bf_emma",
-            "bf_isabella",
-            "bm_george",
-            "bm_lewis"
-        };
+        // The engine, and the pronunciation lexicon it was built with. An engine takes
+        // one lexicon for its lifetime, so moving between an American and a British
+        // voice rebuilds it. _engineLock keeps a rebuild from disposing the engine
+        // underneath a chunk that is still being synthesised.
+        private readonly object _engineLock = new object();
+        private volatile OfflineTts _tts;
+        private volatile string _loadedLexicon;
 
         public bool IsSpeaking => _isSpeaking;
 
@@ -68,22 +82,37 @@ namespace NarratorHotkey.Speech
         public KokoroTTSProvider(AppSettings settings)
         {
             _settings = settings;
-            _currentVoiceName = string.IsNullOrEmpty(settings.KokoroVoice) ? "af_heart" : settings.KokoroVoice;
+            _currentVoiceName = Voices.Contains(settings.KokoroVoice) ? settings.KokoroVoice : DefaultVoice;
         }
 
         public string GetProviderName() => "Kokoro ONNX";
 
-        private async Task EnsureInitializedAsync()
+        /// <summary>
+        /// British voices (bf_, bm_) are given British pronunciations; the rest American.
+        /// </summary>
+        private static string LexiconFor(string voiceName)
         {
-            if (_isInitialized && _tts != null) return;
+            return voiceName != null && voiceName.StartsWith("b", StringComparison.Ordinal)
+                ? BritishLexicon
+                : AmericanLexicon;
+        }
+
+        /// <summary>
+        /// Makes sure the model is on disk and an engine suited to
+        /// <paramref name="voiceName"/> is loaded.
+        /// </summary>
+        private async Task EnsureInitializedAsync(string voiceName)
+        {
+            string lexicon = LexiconFor(voiceName);
+            if (_tts != null && _loadedLexicon == lexicon) return;
 
             // Initialization downloads and extracts the model and builds the engine;
             // two concurrent runs would fight over the same files.
             await _initLock.WaitAsync();
             try
             {
-                if (_isInitialized && _tts != null) return;
-                await InitializeAsync();
+                if (_tts != null && _loadedLexicon == lexicon) return;
+                await InitializeAsync(lexicon);
             }
             finally
             {
@@ -91,7 +120,7 @@ namespace NarratorHotkey.Speech
             }
         }
 
-        private async Task InitializeAsync()
+        private async Task InitializeAsync(string lexicon)
         {
             try
             {
@@ -100,74 +129,151 @@ namespace NarratorHotkey.Speech
                     "NarratorHotkey",
                     "Kokoro"
                 );
+                Directory.CreateDirectory(_kokoroDir);
 
-                if (!Directory.Exists(_kokoroDir))
+                _modelDir = Path.Combine(_kokoroDir, ModelName);
+
+                if (!IsModelPresent())
                 {
-                    Directory.CreateDirectory(_kokoroDir);
-                }
-
-                _modelDir = Path.Combine(_kokoroDir, "kokoro-en-v0_19");
-                _modelPath = Path.Combine(_modelDir, "model.onnx");
-
-                if (!File.Exists(_modelPath))
-                {
-                    ReportProgress("Downloading Kokoro ONNX model files (approx. 80MB)...");
                     await DownloadAndExtractModelAsync();
                 }
 
                 // Initialize SherpaOnnx OfflineTts
                 ReportProgress("Initializing Kokoro ONNX engine...");
-                await Task.Run(() =>
+                var engine = await Task.Run(() =>
                 {
                     var config = new OfflineTtsConfig();
-                    config.Model.Kokoro.Model = _modelPath;
+                    config.Model.Kokoro.Model = Path.Combine(_modelDir, "model.onnx");
                     config.Model.Kokoro.Voices = Path.Combine(_modelDir, "voices.bin");
                     config.Model.Kokoro.Tokens = Path.Combine(_modelDir, "tokens.txt");
                     config.Model.Kokoro.DataDir = Path.Combine(_modelDir, "espeak-ng-data");
+                    config.Model.Kokoro.Lexicon = Path.Combine(_modelDir, lexicon);
                     config.Model.Kokoro.LengthScale = 1.0f;
-                    
+
                     config.Model.NumThreads = 2;
                     config.Model.Provider = "cpu";
 
-                    _tts = new OfflineTts(config);
+                    return new OfflineTts(config);
                 });
 
-                _isInitialized = true;
+                if (engine.NumSpeakers < Voices.Length)
+                {
+                    int found = engine.NumSpeakers;
+                    engine.Dispose();
+                    throw new InvalidDataException(
+                        $"The Kokoro model has {found} voices where at least {Voices.Length} were expected.");
+                }
+
+                OfflineTts previous;
+                lock (_engineLock)
+                {
+                    previous = _tts;
+                    _tts = engine;
+                    _loadedLexicon = lexicon;
+                }
+                previous?.Dispose();
+
                 ReportProgress("Kokoro ONNX initialized successfully");
+                RemoveLegacyModel();
             }
             catch (Exception ex)
             {
                 ReportProgress($"Failed to initialize Kokoro: {ex.Message}");
-                _isInitialized = false;
                 throw;
+            }
+        }
+
+        private bool IsModelPresent()
+        {
+            return File.Exists(Path.Combine(_modelDir, "model.onnx"))
+                && File.Exists(Path.Combine(_modelDir, "voices.bin"))
+                && File.Exists(Path.Combine(_modelDir, "tokens.txt"))
+                && File.Exists(Path.Combine(_modelDir, AmericanLexicon))
+                && File.Exists(Path.Combine(_modelDir, BritishLexicon))
+                && Directory.Exists(Path.Combine(_modelDir, "espeak-ng-data"));
+        }
+
+        /// <summary>
+        /// Frees the space held by the v0.19 model this provider used before v1.0.
+        /// </summary>
+        private void RemoveLegacyModel()
+        {
+            try
+            {
+                string legacyDir = Path.Combine(_kokoroDir, LegacyModelName);
+                if (Directory.Exists(legacyDir))
+                {
+                    Directory.Delete(legacyDir, true);
+                    ReportProgress("Removed the superseded v0.19 model");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Could not remove the old Kokoro model: {ex.Message}");
             }
         }
 
         private async Task DownloadAndExtractModelAsync()
         {
-            string downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2";
-            string archivePath = Path.Combine(_kokoroDir, "kokoro-en-v0_19.tar.bz2");
+            string archivePath = Path.Combine(_kokoroDir, ModelName + ".tar.bz2");
+            // Unpacked beside the final location and moved into place when complete, so
+            // an interrupted download or extraction never leaves a model directory that
+            // looks usable.
+            string stagingDir = Path.Combine(_kokoroDir, "_staging_" + ModelName);
 
-            // Download using HttpClient
-            using (var client = new HttpClient())
+            try
             {
-                client.Timeout = TimeSpan.FromMinutes(5);
-                ReportProgress("Downloading model archive...");
-                using (var response = await client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead))
+                ReportProgress("Downloading the Kokoro v1.0 model (approx. 350MB)...");
+                using (var client = new HttpClient())
                 {
+                    // Bounds the wait for the server, not the transfer: at 350MB the
+                    // download itself can fairly take a long while on a slow line.
+                    client.Timeout = System.Threading.Timeout.InfiniteTimeSpan;
+                    using var headerTimeout = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(60));
+                    using var response = await client.GetAsync(ModelUrl, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token);
                     response.EnsureSuccessStatusCode();
-                    using (var fs = new FileStream(archivePath, FileMode.Create, FileAccess.Write, FileShare.None))
+
+                    long? total = response.Content.Headers.ContentLength;
+                    using var source = await response.Content.ReadAsStreamAsync();
+                    using var fs = new FileStream(archivePath, FileMode.Create, FileAccess.Write, FileShare.None);
+
+                    var buffer = new byte[1 << 16];
+                    long received = 0;
+                    int lastReported = 0;
+                    while (true)
                     {
-                        await response.Content.CopyToAsync(fs);
+                        // A connection that goes quiet is given up on rather than
+                        // waited for indefinitely.
+                        using var stall = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(60));
+                        int read = await source.ReadAsync(buffer, stall.Token);
+                        if (read == 0) break;
+
+                        await fs.WriteAsync(buffer.AsMemory(0, read));
+                        received += read;
+
+                        if (total > 0)
+                        {
+                            int percent = (int)(received * 100 / total.Value);
+                            if (percent >= lastReported + 10)
+                            {
+                                lastReported = percent - percent % 10;
+                                ReportProgress($"Downloading model: {lastReported}%");
+                            }
+                        }
+                    }
+
+                    if (total > 0 && received != total.Value)
+                    {
+                        throw new IOException($"The model download ended early ({received} of {total.Value} bytes).");
                     }
                 }
-            }
 
-            ReportProgress("Extracting model archive (tar.bz2)...");
-            await Task.Run(() =>
-            {
-                try
+                ReportProgress("Extracting model archive (tar.bz2)...");
+                await Task.Run(() =>
                 {
+                    if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, true);
+                    Directory.CreateDirectory(stagingDir);
+
                     // A forward-only reader: SharpCompress's archive API cannot open a
                     // compressed tar, only the streaming one can.
                     using (var stream = File.OpenRead(archivePath))
@@ -177,7 +283,7 @@ namespace NarratorHotkey.Speech
                         {
                             if (!reader.Entry.IsDirectory)
                             {
-                                reader.WriteEntryToDirectory(_kokoroDir, new ExtractionOptions()
+                                reader.WriteEntryToDirectory(stagingDir, new ExtractionOptions()
                                 {
                                     ExtractFullPath = true,
                                     Overwrite = true
@@ -185,44 +291,49 @@ namespace NarratorHotkey.Speech
                             }
                         }
                     }
-                }
-                catch (Exception ex)
-                {
-                    throw new Exception($"Failed to extract model archive using SharpCompress: {ex.Message}", ex);
-                }
 
-                // Verify extraction succeeded
-                if (!File.Exists(_modelPath))
-                {
-                    throw new FileNotFoundException($"Model extraction failed. File not found at {_modelPath}");
-                }
+                    string extracted = Path.Combine(stagingDir, ModelName);
+                    if (!File.Exists(Path.Combine(extracted, "model.onnx")))
+                    {
+                        throw new FileNotFoundException($"Model extraction failed. No model.onnx under {extracted}");
+                    }
 
-                // Clean up archive
+                    if (Directory.Exists(_modelDir)) Directory.Delete(_modelDir, true);
+                    Directory.Move(extracted, _modelDir);
+                });
+
+                ReportProgress("Extraction completed successfully");
+            }
+            finally
+            {
                 try
                 {
-                    File.Delete(archivePath);
+                    if (File.Exists(archivePath)) File.Delete(archivePath);
+                    if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, true);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Failed to delete archive: {ex.Message}");
+                    Console.WriteLine($"Failed to clean up after the model download: {ex.Message}");
                 }
-            });
-
-            ReportProgress("Extraction completed successfully");
+            }
         }
 
         public Task<string[]> GetAvailableVoicesAsync()
         {
             // The list is fixed, so it is answered without loading the engine: listing
-            // voices should not cost an 80MB download or fail when that download does.
-            return Task.FromResult(PresetVoices);
+            // voices should not cost a 350MB download or fail when that download does.
+            return Task.FromResult(Voices);
         }
 
         public Task SelectVoiceAsync(string voiceName)
         {
-            if (PresetVoices.Contains(voiceName))
+            if (Voices.Contains(voiceName))
             {
                 _currentVoiceName = voiceName;
+            }
+            else if (!string.IsNullOrEmpty(voiceName))
+            {
+                Console.WriteLine($"[Kokoro] Unknown voice '{voiceName}'; keeping {_currentVoiceName}.");
             }
             return Task.CompletedTask;
         }
@@ -247,24 +358,10 @@ namespace NarratorHotkey.Speech
             ReportProgress($"Speech rate set to {rate} (speed multiplier: {_currentRate})");
         }
 
-        private int GetSpeakerId(string voiceName)
+        private static int GetSpeakerId(string voiceName)
         {
-            switch (voiceName)
-            {
-                case "af_heart": return 0;
-                case "af": return 0;
-                case "af_bella": return 1;
-                case "af_nicole": return 2;
-                case "af_sarah": return 3;
-                case "af_sky": return 4;
-                case "am_adam": return 5;
-                case "am_michael": return 6;
-                case "bf_emma": return 7;
-                case "bf_isabella": return 8;
-                case "bm_george": return 9;
-                case "bm_lewis": return 10;
-                default: return 0;
-            }
+            int id = Array.IndexOf(Voices, voiceName);
+            return id >= 0 ? id : Array.IndexOf(Voices, DefaultVoice);
         }
 
         public async Task SpeakAsync(string text)
@@ -292,11 +389,12 @@ namespace NarratorHotkey.Speech
 
             try
             {
-                await EnsureInitializedAsync();
+                string voiceName = _currentVoiceName;
+                await EnsureInitializedAsync(voiceName);
 
                 if (token.IsCancellationRequested) return;
 
-                int sid = GetSpeakerId(_currentVoiceName);
+                int sid = GetSpeakerId(voiceName);
 
                 if (!_settings.EnableProgressiveChunking)
                 {
@@ -365,7 +463,16 @@ namespace NarratorHotkey.Speech
             string tempFile = null;
             try
             {
-                var audio = await Task.Run(() => _tts.Generate(chunk, _currentRate, sid));
+                var audio = await Task.Run(() =>
+                {
+                    lock (_engineLock)
+                    {
+                        // Checked under the lock: by the time it is free the engine may
+                        // have been rebuilt for a later reading in a different accent.
+                        if (token.IsCancellationRequested) return null;
+                        return _tts.Generate(chunk, _currentRate, sid);
+                    }
+                });
 
                 if (token.IsCancellationRequested || audio == null) return null;
 
@@ -442,7 +549,7 @@ namespace NarratorHotkey.Speech
         /// </summary>
         public async Task PredownloadVoiceAsync()
         {
-            await EnsureInitializedAsync();
+            await EnsureInitializedAsync(_currentVoiceName);
         }
     }
 }
