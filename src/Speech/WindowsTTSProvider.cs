@@ -124,7 +124,7 @@ namespace NarratorHotkey.Speech
 
                     await AudioPlayer.PlayWavAsync(audioData, tokenSource.Token, session);
                 }
-                catch (TaskCanceledException)
+                catch (OperationCanceledException)
                 {
                     // Normal cancellation via StopAsync
                 }
@@ -136,9 +136,11 @@ namespace NarratorHotkey.Speech
                 {
                     lock (_lock)
                     {
-                        _isSpeakingWinRT = false;
+                        // Only if a newer utterance has not already taken over;
+                        // otherwise this would report it as finished while it speaks.
                         if (ReferenceEquals(_playbackSession, session))
                         {
+                            _isSpeakingWinRT = false;
                             _playbackSession = null;
                         }
                     }
@@ -159,7 +161,14 @@ namespace NarratorHotkey.Speech
                     _pendingPrompts[prompt] = tcs;
                 }
 
-                await tcs.Task;
+                try
+                {
+                    await tcs.Task;
+                }
+                catch (OperationCanceledException)
+                {
+                    // Stopped by the user; not an error for the caller to report.
+                }
             }
         }
 

@@ -2,18 +2,20 @@
 Description=NarratorHotkey text-to-speech daemon
 Documentation=https://github.com/gravypower/NarratorHotkey
 
+# Give up if the daemon fails repeatedly rather than respawning forever, as it
+# would when something else holds its port. These two belong to [Unit]; systemd
+# ignores them, with a warning, under [Service].
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
 [Service]
 Type=simple
 # @INSTALL_DIR@ is substituted by install.sh.
 ExecStart=@INSTALL_DIR@/NarratorHotkey --daemon
+# A second instance finds the lock held and exits cleanly, which on-failure does
+# not restart, so there is no restart loop against a running daemon.
 Restart=on-failure
 RestartSec=2
-
-# The daemon exits straight away if another instance already holds the lock, so a
-# restart loop against a running tray/daemon is not possible. Give up if it does
-# fail repeatedly rather than respawning forever.
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 [Install]
 # default.target rather than graphical-session.target: the latter is only reached

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -97,25 +98,31 @@ namespace NarratorHotkey
                     OpenBrowser($"http://127.0.0.1:{Port}");
                     break;
                 case "--stop":
-                    await SendCommandToDaemonAsync("STOP");
+                    await PostToDaemonAsync("/api/stop");
                     break;
                 case "--pause":
-                    await SendCommandToDaemonAsync("PAUSE");
+                    await PostToDaemonAsync("/api/pause");
                     break;
                 case "--resume":
-                    await SendCommandToDaemonAsync("RESUME");
+                    await PostToDaemonAsync("/api/resume");
                     break;
                 case "--toggle-pause":
-                    await SendCommandToDaemonAsync("TOGGLE_PAUSE");
+                    await PostToDaemonAsync("/api/toggle-pause");
                     break;
                 case "--set-provider":
-                    if (args.Length < 2)
+                    // Everything after the flag, so "--set-provider Kokoro ONNX" works
+                    // unquoted.
+                    string provider = AppSettings.ResolveProviderName(string.Join(" ", args, 1, args.Length - 1));
+                    if (provider == null)
                     {
-                        Console.WriteLine("Error: Please specify provider name.");
+                        // An unknown name used to be saved as it was, and the daemon then
+                        // quietly spoke with a different provider.
+                        Console.WriteLine($"Error: Please specify a provider: {string.Join(", ", AppSettings.ProviderNames)}.");
+                        Environment.ExitCode = 1;
                         return;
                     }
-                    await SetSettingAsync(s => s.TTSProvider = args[1]);
-                    Console.WriteLine($"TTS Provider set to {args[1]}");
+                    await SetSettingAsync(s => s.TTSProvider = provider);
+                    Console.WriteLine($"TTS Provider set to {provider}");
                     break;
                 case "--set-voice":
                     if (args.Length < 2)
@@ -132,9 +139,11 @@ namespace NarratorHotkey
                     Console.WriteLine($"Voice set to {args[1]}");
                     break;
                 case "--set-rate":
-                    if (args.Length < 2 || !int.TryParse(args[1], out int rate))
+                    if (args.Length < 2 || !int.TryParse(args[1], out int rate)
+                        || rate < AppSettings.MinSpeechRate || rate > AppSettings.MaxSpeechRate)
                     {
-                        Console.WriteLine("Error: Please specify an integer rate (-10 to 10).");
+                        Console.WriteLine($"Error: Please specify an integer rate ({AppSettings.MinSpeechRate} to {AppSettings.MaxSpeechRate}).");
+                        Environment.ExitCode = 1;
                         return;
                     }
                     await SetSettingAsync(s => s.SpeechRate = rate);
@@ -145,11 +154,10 @@ namespace NarratorHotkey
                     break;
                 case "--list-providers":
                     Console.WriteLine("Available TTS Providers:");
-                    Console.WriteLine(" - Kokoro ONNX");
-                    Console.WriteLine(" - Piper");
-#if WINDOWS
-                    Console.WriteLine(" - Windows");
-#endif
+                    foreach (string name in AppSettings.ProviderNames)
+                    {
+                        Console.WriteLine($" - {name}");
+                    }
                     break;
                 case "--status":
                     ShowStatus();
@@ -162,6 +170,7 @@ namespace NarratorHotkey
                 default:
                     Console.WriteLine($"Unknown argument: {args[0]}");
                     ShowHelp();
+                    Environment.ExitCode = 1;
                     break;
             }
         }
@@ -175,7 +184,7 @@ namespace NarratorHotkey
             // Awaited: the process exits as soon as this returns, which would otherwise
             // drop the request before it reached the daemon. A failure only means no
             // daemon is running, and it reads the file when it next starts.
-            await SendCommandToDaemonAsync("RELOAD_SETTINGS");
+            await PostToDaemonAsync("/api/reload");
         }
 
         private static void ShowStatus()
@@ -228,7 +237,7 @@ namespace NarratorHotkey
         private static async Task TriggerReadAsync()
         {
             string selectedText = "";
-            bool isWindows = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows);
+            bool isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
             
             if (isWindows)
             {
@@ -246,28 +255,37 @@ namespace NarratorHotkey
                 selectedText = "No text selected.";
             }
 
-            // Try to send to daemon
-            bool success = await SendCommandToDaemonAsync("SPEAK:" + selectedText);
-            if (!success)
+            string json = JsonSerializer.Serialize(new { text = selectedText });
+            HttpContent Body() => new StringContent(json, Encoding.UTF8, "application/json");
+
+            var reply = await PostToDaemonAsync("/api/speak", Body());
+            if (reply == DaemonReply.Unreachable)
             {
-                // Daemon not running, start it
                 Console.WriteLine("Daemon not running. Starting background daemon...");
                 StartDaemonProcess();
-                
-                // Try to connect up to 5 times
-                for (int i = 0; i < 5; i++)
+
+                // Only "nothing is listening" is retried. A request that reached the
+                // daemon may already be speaking, and sending it again would start the
+                // reading over, or say it twice.
+                for (int i = 0; i < 10 && reply == DaemonReply.Unreachable; i++)
                 {
                     await Task.Delay(400);
-                    success = await SendCommandToDaemonAsync("SPEAK:" + selectedText);
-                    if (success) break;
+                    reply = await PostToDaemonAsync("/api/speak", Body());
                 }
 
-                if (!success)
+                if (reply == DaemonReply.Unreachable)
                 {
                     // Fallback: speak in-process
                     Console.WriteLine("Failed to connect to daemon. Speaking in-process (will have startup latency)...");
                     await SpeechManager.Instance.SpeakAsync(selectedText);
+                    return;
                 }
+            }
+
+            if (reply == DaemonReply.Failed)
+            {
+                Console.WriteLine("The daemon did not accept the text.");
+                Environment.ExitCode = 1;
             }
         }
 
@@ -297,7 +315,7 @@ namespace NarratorHotkey
 
             Console.WriteLine($"Starting background daemon: {fileName} {arguments}");
 
-            bool isWindows = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows);
+            bool isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
 
             Process.Start(new ProcessStartInfo
             {
@@ -309,54 +327,40 @@ namespace NarratorHotkey
             });
         }
 
-        private static async Task<bool> SendCommandToDaemonAsync(string command)
+        private enum DaemonReply
+        {
+            /// <summary>The daemon took the request.</summary>
+            Ok,
+            /// <summary>Nothing is listening on the port.</summary>
+            Unreachable,
+            /// <summary>The daemon is there but refused the request or failed on it.</summary>
+            Failed
+        }
+
+        private static async Task<DaemonReply> PostToDaemonAsync(string path, HttpContent content = null)
         {
             try
             {
                 using var client = new HttpClient();
-                client.Timeout = TimeSpan.FromSeconds(2);
-                HttpResponseMessage response;
-                
-                if (command == "STOP")
-                {
-                    response = await client.PostAsync($"http://127.0.0.1:{Port}/api/stop", null);
-                }
-                else if (command == "PAUSE")
-                {
-                    response = await client.PostAsync($"http://127.0.0.1:{Port}/api/pause", null);
-                }
-                else if (command == "RESUME")
-                {
-                    response = await client.PostAsync($"http://127.0.0.1:{Port}/api/resume", null);
-                }
-                else if (command == "TOGGLE_PAUSE")
-                {
-                    response = await client.PostAsync($"http://127.0.0.1:{Port}/api/toggle-pause", null);
-                }
-                else if (command == "RELOAD_SETTINGS")
-                {
-                    response = await client.PostAsync($"http://127.0.0.1:{Port}/api/reload", null);
-                }
-                else if (command.StartsWith("SPEAK:"))
-                {
-                    string text = command.Substring(6);
-                    var content = new StringContent(
-                        JsonSerializer.Serialize(new { text = text }), 
-                        Encoding.UTF8, 
-                        "application/json"
-                    );
-                    response = await client.PostAsync($"http://127.0.0.1:{Port}/api/speak", content);
-                }
-                else
-                {
-                    return false;
-                }
-                
-                return response.IsSuccessStatusCode;
+                // Generous: a daemon that has only just started answers its first
+                // request after loading its settings and provider.
+                client.Timeout = TimeSpan.FromSeconds(15);
+                using var response = await client.PostAsync($"http://127.0.0.1:{Port}{path}", content);
+                return response.IsSuccessStatusCode ? DaemonReply.Ok : DaemonReply.Failed;
+            }
+            catch (HttpRequestException)
+            {
+                return DaemonReply.Unreachable;
+            }
+            catch (OperationCanceledException)
+            {
+                // Timed out: it connected, so the daemon has the request and is slow
+                // to answer. Treating that as "not running" used to send the text again.
+                return DaemonReply.Ok;
             }
             catch
             {
-                return false;
+                return DaemonReply.Failed;
             }
         }
 
@@ -377,7 +381,7 @@ namespace NarratorHotkey
 
         private static async Task RunDaemonAsync()
         {
-            string mutexName = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
+            string mutexName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
                 ? "Global\\NarratorHotkey_Tray_Mutex"
                 : "NarratorHotkey_Tray_Mutex";
             _appMutex = new Mutex(true, mutexName, out bool createdNew);
@@ -390,31 +394,60 @@ namespace NarratorHotkey
             try
             {
                 // Start Web server / Daemon API
-                WebGui.Start(Port);
+                if (!WebGui.Start(Port))
+                {
+                    // Without the API nothing can reach this process, so staying up
+                    // would only look like a working daemon. A failing exit code lets
+                    // systemd report it and retry.
+                    Console.WriteLine($"Daemon could not listen on port {Port}; exiting.");
+                    Environment.ExitCode = 1;
+                    return;
+                }
                 Console.WriteLine($"Daemon started. Web configuration dashboard and API running at http://127.0.0.1:{Port}...");
-                
-                // Initialize speech manager
-                await SpeechManager.Instance.ApplySettingsAsync();
 
                 // Keep the process alive until terminated
-                var tcs = new TaskCompletionSource<bool>();
-                
+                var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
                 Console.CancelKeyPress += (s, e) =>
                 {
                     e.Cancel = true;
                     tcs.TrySetResult(true);
                 };
-                
+
+                // systemd stops the service with SIGTERM. Left to the runtime that ends
+                // the process where it stands, leaving the audio player running and its
+                // temp file behind; cancelling it lets the finally block below run.
+                using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context =>
+                {
+                    context.Cancel = true;
+                    tcs.TrySetResult(true);
+                });
+
                 AppDomain.CurrentDomain.ProcessExit += (s, e) =>
                 {
                     tcs.TrySetResult(true);
                 };
 
+                // Initialize speech manager. A provider that cannot be prepared now
+                // (no network for a first download, say) is not a reason to exit: the
+                // settings page is how the user would fix it.
+                try
+                {
+                    await SpeechManager.Instance.ApplySettingsAsync();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Could not apply settings at startup: {ex.Message}");
+                }
+
                 await tcs.Task;
+
+                await SpeechManager.Instance.StopAsync();
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Daemon error: {ex.Message}");
+                Environment.ExitCode = 1;
             }
             finally
             {
@@ -432,11 +465,11 @@ namespace NarratorHotkey
         {
             try
             {
-                if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 {
                     Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
                 }
-                else if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.OSX))
+                else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
                 {
                     Process.Start("open", url);
                 }
@@ -453,25 +486,36 @@ namespace NarratorHotkey
 
         private static async Task<string> GetLinuxSelectedTextAsync()
         {
-            // Try wl-paste (Wayland) primary selection
-            string text = await RunCommandAsync("wl-paste", "--primary");
-            if (!string.IsNullOrWhiteSpace(text)) return text.Trim();
+            // Only the tools that can work in this session are tried: wl-paste without
+            // a Wayland display, or xclip without an X display, can only fail.
+            bool wayland = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY"));
+            bool x11 = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY"));
 
-            // Try xclip (X11) primary selection
-            text = await RunCommandAsync("xclip", "-o -selection primary");
-            if (!string.IsNullOrWhiteSpace(text)) return text.Trim();
+            var attempts = new System.Collections.Generic.List<(string cmd, string args)>();
 
-            // Try xsel (X11) primary selection
-            text = await RunCommandAsync("xsel", "-o -p");
-            if (!string.IsNullOrWhiteSpace(text)) return text.Trim();
+            // The primary selection (whatever is highlighted) first...
+            if (wayland) attempts.Add(("wl-paste", "--primary --no-newline"));
+            if (x11)
+            {
+                attempts.Add(("xclip", "-o -selection primary"));
+                attempts.Add(("xsel", "-o -p"));
+            }
 
-            // Fallback to clipboard: wl-paste
-            text = await RunCommandAsync("wl-paste", "");
-            if (!string.IsNullOrWhiteSpace(text)) return text.Trim();
+            // ...then the clipboard.
+            if (wayland) attempts.Add(("wl-paste", "--no-newline"));
+            if (x11)
+            {
+                attempts.Add(("xclip", "-o -selection clipboard"));
+                attempts.Add(("xsel", "-o -b"));
+            }
 
-            // Fallback to clipboard: xclip
-            text = await RunCommandAsync("xclip", "-o -selection clipboard");
-            if (!string.IsNullOrWhiteSpace(text)) return text.Trim();
+            foreach (var (cmd, args) in attempts)
+            {
+                if (!Platform.CommandExists(cmd)) continue;
+
+                string text = await RunCommandAsync(cmd, args);
+                if (!string.IsNullOrWhiteSpace(text)) return text.Trim();
+            }
 
             return "";
         }
@@ -493,12 +537,29 @@ namespace NarratorHotkey
                 using var process = Process.Start(psi);
                 if (process == null) return "";
 
-                string output = await process.StandardOutput.ReadToEndAsync();
-                await process.WaitForExitAsync();
-                
-                if (process.ExitCode == 0)
+                // A clipboard tool waits on whichever application owns the selection,
+                // and one that never answers would hang the hotkey for good.
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                try
                 {
-                    return output;
+                    // Both pipes are drained together; reading one to the end while the
+                    // other fills would stall the child.
+                    var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                    var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+                    string output = await stdout;
+                    await stderr;
+                    await process.WaitForExitAsync(timeout.Token);
+
+                    if (process.ExitCode == 0)
+                    {
+                        return output;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    Console.WriteLine($"{cmd} did not answer in time; skipping it.");
+                    try { process.Kill(entireProcessTree: true); }
+                    catch { }
                 }
             }
             catch

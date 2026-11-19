@@ -32,6 +32,7 @@ namespace NarratorHotkey.Speech
 
         private readonly List<SpeechLogEntry> _speechHistory = new List<SpeechLogEntry>();
         private readonly object _logLock = new object();
+        private readonly object _logFileLock = new object();
         private readonly Task _initTask;
 
         public IReadOnlyList<SpeechLogEntry> SpeechHistory
@@ -193,17 +194,23 @@ namespace NarratorHotkey.Speech
         {
             try
             {
-                string json;
-                lock (_logLock)
+                // One writer at a time: saves are queued from the pool, and two that
+                // overlapped would fail on the open file and could leave the older
+                // snapshot as the one on disk.
+                lock (_logFileLock)
                 {
-                    json = JsonSerializer.Serialize(_speechHistory);
+                    string json;
+                    lock (_logLock)
+                    {
+                        json = JsonSerializer.Serialize(_speechHistory);
+                    }
+                    string dir = Path.GetDirectoryName(LogPath);
+                    if (dir != null && !Directory.Exists(dir))
+                    {
+                        Directory.CreateDirectory(dir);
+                    }
+                    File.WriteAllText(LogPath, json);
                 }
-                string dir = Path.GetDirectoryName(LogPath);
-                if (dir != null && !Directory.Exists(dir))
-                {
-                    Directory.CreateDirectory(dir);
-                }
-                File.WriteAllText(LogPath, json);
             }
             catch (Exception ex)
             {
@@ -238,15 +245,18 @@ namespace NarratorHotkey.Speech
 
         public void ClearSpeechLog()
         {
-            lock (_logLock)
-            {
-                _speechHistory.Clear();
-            }
             try
             {
-                if (File.Exists(LogPath))
+                lock (_logFileLock)
                 {
-                    File.Delete(LogPath);
+                    lock (_logLock)
+                    {
+                        _speechHistory.Clear();
+                    }
+                    if (File.Exists(LogPath))
+                    {
+                        File.Delete(LogPath);
+                    }
                 }
             }
             catch (Exception ex)
@@ -295,7 +305,7 @@ namespace NarratorHotkey.Speech
             }
 #endif
 
-            _currentProvider = _providers[providerName];
+            await SwitchProviderAsync(_providers[providerName]);
             _currentProvider.SetRate(_settings.SpeechRate);
 
             // Select the appropriate voice
@@ -318,6 +328,29 @@ namespace NarratorHotkey.Speech
             Console.WriteLine($"Using TTS Provider: {_currentProvider.GetProviderName()}");
         }
 
+        /// <summary>
+        /// Makes <paramref name="next"/> the active provider. Stop, pause and resume only
+        /// reach the active provider, so one left speaking when it is swapped out could
+        /// no longer be silenced by anything short of quitting.
+        /// </summary>
+        private async Task SwitchProviderAsync(ITTSProvider next)
+        {
+            var previous = _currentProvider;
+            _currentProvider = next;
+
+            if (previous != null && !ReferenceEquals(previous, next))
+            {
+                try
+                {
+                    await previous.StopAsync();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error stopping the previous TTS provider: {ex.Message}");
+                }
+            }
+        }
+
         public async Task ApplyTemporarySettingsAsync(string providerName, string voiceName)
         {
             if (string.IsNullOrEmpty(providerName) || !_providers.ContainsKey(providerName))
@@ -325,7 +358,7 @@ namespace NarratorHotkey.Speech
                 return;
             }
 
-            _currentProvider = _providers[providerName];
+            await SwitchProviderAsync(_providers[providerName]);
             _currentProvider.SetRate(_settings.SpeechRate);
 
             if (!string.IsNullOrEmpty(voiceName))

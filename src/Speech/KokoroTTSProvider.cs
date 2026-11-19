@@ -211,10 +211,11 @@ namespace NarratorHotkey.Speech
             ReportProgress("Extraction completed successfully");
         }
 
-        public async Task<string[]> GetAvailableVoicesAsync()
+        public Task<string[]> GetAvailableVoicesAsync()
         {
-            await EnsureInitializedAsync();
-            return PresetVoices;
+            // The list is fixed, so it is answered without loading the engine: listing
+            // voices should not cost an 80MB download or fail when that download does.
+            return Task.FromResult(PresetVoices);
         }
 
         public Task SelectVoiceAsync(string voiceName)
@@ -273,12 +274,19 @@ namespace NarratorHotkey.Speech
 
             await StopAsync();
 
+            // The token and session are held in locals for the life of this utterance.
+            // Reading them back from the fields would pick up the next utterance's as
+            // soon as one started, and this one would carry on talking over it.
+            var tokenSource = new System.Threading.CancellationTokenSource();
+            var token = tokenSource.Token;
+            // One session for the whole utterance, so a pause taken during one
+            // chunk still holds the chunks that follow it.
+            var session = new PlaybackSession();
+
             lock (_lock)
             {
-                _playTokenSource = new System.Threading.CancellationTokenSource();
-                // One session for the whole utterance, so a pause taken during one
-                // chunk still holds the chunks that follow it.
-                _playbackSession = new PlaybackSession();
+                _playTokenSource = tokenSource;
+                _playbackSession = session;
                 _isSpeaking = true;
             }
 
@@ -286,16 +294,16 @@ namespace NarratorHotkey.Speech
             {
                 await EnsureInitializedAsync();
 
-                if (_playTokenSource.Token.IsCancellationRequested) return;
+                if (token.IsCancellationRequested) return;
 
                 int sid = GetSpeakerId(_currentVoiceName);
 
                 if (!_settings.EnableProgressiveChunking)
                 {
                     // Synthesize entire text at once
-                    byte[] audioData = await InferChunkAsync(text, sid);
-                    if (_playTokenSource.Token.IsCancellationRequested || audioData == null) return;
-                    await PlayAudioAsync(audioData);
+                    byte[] audioData = await InferChunkAsync(text, sid, token);
+                    if (token.IsCancellationRequested || audioData == null) return;
+                    await AudioPlayer.PlayWavAsync(audioData, token, session);
                 }
                 else
                 {
@@ -303,28 +311,32 @@ namespace NarratorHotkey.Speech
                     if (chunks.Count == 0) return;
 
                     // Start generating first chunk
-                    Task<byte[]> nextInferenceTask = InferChunkAsync(chunks[0], sid);
+                    Task<byte[]> nextInferenceTask = InferChunkAsync(chunks[0], sid, token);
 
                     for (int i = 0; i < chunks.Count; i++)
                     {
-                        if (_playTokenSource.Token.IsCancellationRequested) break;
+                        if (token.IsCancellationRequested) break;
 
                         byte[] audioData = await nextInferenceTask;
 
-                        if (_playTokenSource.Token.IsCancellationRequested || audioData == null) break;
+                        if (token.IsCancellationRequested) break;
 
                         if (i + 1 < chunks.Count)
                         {
                             // Start pre-generating next chunk in background while current plays
-                            nextInferenceTask = InferChunkAsync(chunks[i + 1], sid);
+                            nextInferenceTask = InferChunkAsync(chunks[i + 1], sid, token);
                         }
 
+                        // A chunk that failed to synthesise is skipped rather than
+                        // ending the whole reading.
+                        if (audioData == null) continue;
+
                         // Play current chunk
-                        await PlayAudioAsync(audioData);
+                        await AudioPlayer.PlayWavAsync(audioData, token, session);
                     }
                 }
             }
-            catch (TaskCanceledException)
+            catch (OperationCanceledException)
             {
                 // Stopped naturally
             }
@@ -336,64 +348,42 @@ namespace NarratorHotkey.Speech
             {
                 lock (_lock)
                 {
-                    _isSpeaking = false;
+                    // Only if a newer utterance has not already taken over.
+                    if (ReferenceEquals(_playTokenSource, tokenSource))
+                    {
+                        _isSpeaking = false;
+                        _playTokenSource = null;
+                        _playbackSession = null;
+                    }
                 }
+                tokenSource.Dispose();
             }
         }
 
-        private async Task<byte[]> InferChunkAsync(string chunk, int sid)
+        private async Task<byte[]> InferChunkAsync(string chunk, int sid, System.Threading.CancellationToken token)
         {
+            string tempFile = null;
             try
             {
-                OfflineTtsGeneratedAudio audio = null;
-                await Task.Run(() =>
-                {
-                    audio = _tts.Generate(chunk, _currentRate, sid);
-                });
+                var audio = await Task.Run(() => _tts.Generate(chunk, _currentRate, sid));
 
-                if (_playTokenSource.Token.IsCancellationRequested || audio == null) return null;
+                if (token.IsCancellationRequested || audio == null) return null;
 
-                string tempFile = Path.Combine(_kokoroDir, $"temp_kokoro_{Guid.NewGuid()}.wav");
-                await Task.Run(() =>
+                tempFile = Path.Combine(_kokoroDir, $"temp_kokoro_{Guid.NewGuid()}.wav");
+                return await Task.Run(() =>
                 {
                     audio.SaveToWaveFile(tempFile);
+                    return File.ReadAllBytes(tempFile);
                 });
-
-                if (_playTokenSource.Token.IsCancellationRequested)
-                {
-                    TryDeleteFile(tempFile);
-                    return null;
-                }
-
-                byte[] audioData = File.ReadAllBytes(tempFile);
-                TryDeleteFile(tempFile);
-                return audioData;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error inferring chunk: {ex.Message}");
                 return null;
             }
-        }
-
-        private async Task PlayAudioAsync(byte[] audioData)
-        {
-            try
+            finally
             {
-                System.Threading.CancellationToken token;
-                PlaybackSession session;
-                lock (_lock)
-                {
-                    if (_playTokenSource == null || _playTokenSource.Token.IsCancellationRequested) return;
-                    token = _playTokenSource.Token;
-                    session = _playbackSession;
-                }
-
-                await AudioPlayer.PlayWavAsync(audioData, token, session);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error playing audio chunk: {ex.Message}");
+                if (tempFile != null) TryDeleteFile(tempFile);
             }
         }
 
@@ -417,7 +407,9 @@ namespace NarratorHotkey.Speech
             lock (_lock)
             {
                 _isSpeaking = false;
-                _playTokenSource?.Cancel();
+                try { _playTokenSource?.Cancel(); }
+                catch (ObjectDisposedException) { }
+                _playTokenSource = null;
                 _playbackSession = null;
             }
             return Task.CompletedTask;

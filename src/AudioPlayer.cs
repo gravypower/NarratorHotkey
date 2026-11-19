@@ -363,7 +363,8 @@ namespace NarratorHotkey
         private static string FindLinuxPlayer()
         {
             // Try different audio playing commands in order of preference
-            string[] players = { "paplay", "pw-play", "aplay" };
+            // afplay is the one macOS ships with; the others are never present there.
+            string[] players = { "paplay", "pw-play", "aplay", "afplay" };
             foreach (var player in players)
             {
                 if (Platform.CommandExists(player))

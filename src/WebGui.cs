@@ -19,9 +19,12 @@ namespace NarratorHotkey
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         };
 
-        public static void Start(int port)
+        /// <summary>
+        /// Starts serving. Returns false if the port could not be opened.
+        /// </summary>
+        public static bool Start(int port)
         {
-            if (_isRunning) return;
+            if (_isRunning) return true;
             _isRunning = true;
             _port = port;
 
@@ -46,6 +49,7 @@ namespace NarratorHotkey
                         }
                     }
                 });
+                return true;
             }
             catch (Exception ex)
             {
@@ -57,6 +61,7 @@ namespace NarratorHotkey
                     System.Windows.Forms.MessageBoxButtons.OK,
                     System.Windows.Forms.MessageBoxIcon.Error);
 #endif
+                return false;
             }
         }
 
@@ -146,12 +151,31 @@ namespace NarratorHotkey
                     response.Close();
                 }
             }
+            catch (JsonException)
+            {
+                TryClose(response, 400);
+            }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error handling web request: {ex.Message}");
-                response.StatusCode = 500;
+                TryClose(response, 500);
+            }
+        }
+
+        private static void TryClose(HttpListenerResponse response, int statusCode)
+        {
+            try
+            {
+                // Throws if the handler had already started the response.
+                response.StatusCode = statusCode;
+            }
+            catch { }
+
+            try
+            {
                 response.Close();
             }
+            catch { }
         }
 
         /// <summary>
@@ -243,19 +267,7 @@ namespace NarratorHotkey
 
         private static async Task ServeProvidersAsync(HttpListenerResponse response)
         {
-            bool isWindows = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows);
-            string[] providers;
-            
-            if (isWindows)
-            {
-                providers = new[] { "Kokoro ONNX", "Piper", "Windows" };
-            }
-            else
-            {
-                providers = new[] { "Kokoro ONNX", "Piper" };
-            }
-
-            string json = JsonSerializer.Serialize(providers);
+            string json = JsonSerializer.Serialize(AppSettings.ProviderNames);
             byte[] buffer = Encoding.UTF8.GetBytes(json);
             response.ContentType = "application/json";
             response.ContentLength64 = buffer.Length;
@@ -306,7 +318,16 @@ namespace NarratorHotkey
                     var settings = AppSettings.Load();
                     if (!string.IsNullOrEmpty(model.ttsProvider))
                     {
-                        settings.TTSProvider = model.ttsProvider;
+                        // An unknown provider is left out rather than saved: the voice
+                        // below would otherwise be filed under the wrong engine.
+                        string provider = AppSettings.ResolveProviderName(model.ttsProvider);
+                        if (provider == null)
+                        {
+                            response.StatusCode = 400;
+                            response.Close();
+                            return;
+                        }
+                        settings.TTSProvider = provider;
                     }
                     if (!string.IsNullOrEmpty(model.voice))
                     {
@@ -316,7 +337,7 @@ namespace NarratorHotkey
                     }
                     if (model.speechRate.HasValue)
                     {
-                        settings.SpeechRate = model.speechRate.Value;
+                        settings.SpeechRate = Math.Clamp(model.speechRate.Value, AppSettings.MinSpeechRate, AppSettings.MaxSpeechRate);
                     }
                     if (model.enableProgressiveChunking.HasValue)
                     {
@@ -1426,10 +1447,16 @@ namespace NarratorHotkey
                     else if (prov.includes('Piper')) icon = '🐸';
                     else if (prov.includes('Kokoro')) icon = '🌸';
 
-                    card.innerHTML = `
-                        <span class="provider-icon">${icon}</span>
-                        <span class="provider-name">${prov}</span>
-                    `;
+                    const iconEl = document.createElement('span');
+                    iconEl.className = 'provider-icon';
+                    iconEl.textContent = icon;
+
+                    const nameEl = document.createElement('span');
+                    nameEl.className = 'provider-name';
+                    nameEl.textContent = prov;
+
+                    card.appendChild(iconEl);
+                    card.appendChild(nameEl);
 
                     card.addEventListener('click', () => {
                         document.querySelectorAll('.provider-card').forEach(c => c.classList.remove('active'));
@@ -1675,7 +1702,16 @@ namespace NarratorHotkey
 
         voicePreviewCurrent.addEventListener('click', () => previewVoice(findVoice(selectedVoiceId)));
 
+        let renderedHistoryKey = null;
+
         function renderHistory(logs) {
+            // Polled every second; redrawing an unchanged list would drop the user's
+            // scroll position and any text they had selected in it.
+            const first = logs && logs.length ? logs[0] : null;
+            const key = first ? `${logs.length}|${first.Timestamp}|${first.CleanedText}` : 'empty';
+            if (key === renderedHistoryKey) return;
+            renderedHistoryKey = key;
+
             historyList.innerHTML = '';
             if (!logs || logs.length === 0) {
                 historyList.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 20px; font-size: 14px;">No speech logs yet.</div>';
@@ -1686,14 +1722,27 @@ namespace NarratorHotkey
                 const item = document.createElement('div');
                 item.className = 'history-item';
                 
-                const time = new Date(log.Timestamp).toLocaleTimeString();
-                item.innerHTML = `
-                    <div class="history-item-header">
-                        <span>${time}</span>
-                        <span class="tag">${log.Provider}</span>
-                    </div>
-                    <div class="history-text">${log.CleanedText}</div>
-                `;
+                // Built as text nodes: the log holds whatever was on screen when the
+                // hotkey was pressed, and that must never be parsed as markup here.
+                const header = document.createElement('div');
+                header.className = 'history-item-header';
+
+                const time = document.createElement('span');
+                time.textContent = new Date(log.Timestamp).toLocaleTimeString();
+
+                const tag = document.createElement('span');
+                tag.className = 'tag';
+                tag.textContent = log.Provider;
+
+                header.appendChild(time);
+                header.appendChild(tag);
+
+                const text = document.createElement('div');
+                text.className = 'history-text';
+                text.textContent = log.CleanedText;
+
+                item.appendChild(header);
+                item.appendChild(text);
                 historyList.appendChild(item);
             });
         }

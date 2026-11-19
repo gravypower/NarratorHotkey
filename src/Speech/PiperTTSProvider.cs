@@ -22,9 +22,12 @@ namespace NarratorHotkey.Speech
         private string _currentVoiceName;
         private float _currentRate = 1.0f;
         private volatile bool _isInitialized = false;
+        // The utterance in progress. Guarded by _stateLock and replaced as a set, so a
+        // reading that has been superseded can tell it is no longer the current one.
+        private readonly object _stateLock = new object();
         private bool _isSpeaking = false;
         private System.Threading.CancellationTokenSource _playTokenSource;
-        private volatile PlaybackSession _playbackSession;
+        private PlaybackSession _playbackSession;
 
         // Replaced wholesale once the catalogue is downloaded. A shared List that is
         // cleared and refilled can be observed mid-write by another caller, which is
@@ -52,9 +55,15 @@ namespace NarratorHotkey.Speech
             "en_GB-jenny_dioco-medium"
         };
 
-        public bool IsSpeaking => _isSpeaking;
+        public bool IsSpeaking
+        {
+            get { lock (_stateLock) { return _isSpeaking; } }
+        }
 
-        public bool IsPaused => _isSpeaking && (_playbackSession?.IsPaused ?? false);
+        public bool IsPaused
+        {
+            get { lock (_stateLock) { return _isSpeaking && (_playbackSession?.IsPaused ?? false); } }
+        }
 
         // Progress reporting
         public event Action<string> ProgressChanged;
@@ -215,47 +224,47 @@ namespace NarratorHotkey.Speech
 
         public async Task SpeakAsync(string text)
         {
-            if (_isSpeaking)
-            {
-                await StopAsync();
-            }
+            await StopAsync();
 
             if (string.IsNullOrWhiteSpace(text))
                 return;
 
-            _isSpeaking = true;
+            // Held in locals for the life of this utterance. Checking a shared flag
+            // instead let a reading that had been interrupted see the next one's
+            // "speaking" state and carry on talking over it.
+            var tokenSource = new System.Threading.CancellationTokenSource();
+            var token = tokenSource.Token;
             // One session for the whole utterance, so a pause taken during one chunk
             // still holds the chunks that follow it.
-            _playbackSession = new PlaybackSession();
+            var session = new PlaybackSession();
+
+            lock (_stateLock)
+            {
+                _playTokenSource = tokenSource;
+                _playbackSession = session;
+                _isSpeaking = true;
+            }
 
             try
             {
                 await EnsureInitializedAsync();
 
-                if (!_isSpeaking) return; // user cancelled during initialization
+                if (token.IsCancellationRequested) return; // user cancelled during initialization
 
-                // Load or download the voice model from cache
-                dynamic voiceModel = null;
-                try
-                {
-                    ReportProgress($"Loading voice model: {_currentVoiceName}");
-                    // This will use cached model if available, otherwise download
-                    voiceModel = await LoadOrDownloadModelAsync(_currentVoiceName);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Failed to load model for '{_currentVoiceName}': {ex.Message}");
-                    return;
-                }
+                // Uses the cached model if there is one, otherwise downloads it.
+                // It announces its own failures.
+                string voiceName = _currentVoiceName;
+                ReportProgress($"Loading voice model: {voiceName}");
+                VoiceModel voiceModel = await LoadOrDownloadModelAsync(voiceName);
 
-                if (voiceModel == null)
-                {
-                    AnnounceError($"Could not load voice model: {_currentVoiceName}");
-                    return;
-                }
+                if (voiceModel == null || token.IsCancellationRequested) return;
 
                 // Create a new PiperProvider with the model configured
                 var piperWorkingDir = Path.Combine(_piperDir, "piper");
+                // Absent when a system-wide piper is used and nothing was downloaded;
+                // starting a process in a missing directory fails with a misleading
+                // "file not found" for the executable.
+                Directory.CreateDirectory(piperWorkingDir);
                 ReportProgress($"Using speaking rate: {_currentRate}");
                 var piperProvider = new PiperProvider(new PiperConfiguration
                 {
@@ -268,69 +277,99 @@ namespace NarratorHotkey.Speech
                 if (!_settings.EnableProgressiveChunking)
                 {
                     // Synthesize speech
-                    var audioData = await piperProvider.InferAsync(text, AudioOutputType.Wav);
+                    var audioData = await piperProvider.InferAsync(text, AudioOutputType.Wav, token);
 
-                    if (!_isSpeaking) return; // Were we stopped during inference?
+                    if (token.IsCancellationRequested) return; // Were we stopped during inference?
 
-                    // Play audio from byte array asynchronously
-                    await PlayAudioAsync(audioData);
+                    await AudioPlayer.PlayWavAsync(audioData, token, session);
                 }
                 else
                 {
                     var chunks = TextNormalizer.ChunkText(text);
                     if (chunks.Count == 0) return;
 
-                    Task<byte[]> nextInferenceTask = piperProvider.InferAsync(chunks[0], AudioOutputType.Wav);
+                    Task<byte[]> nextInferenceTask = piperProvider.InferAsync(chunks[0], AudioOutputType.Wav, token);
 
                     for (int i = 0; i < chunks.Count; i++)
                     {
-                        if (!_isSpeaking) break;
+                        if (token.IsCancellationRequested) break;
 
                         var audioData = await nextInferenceTask;
 
-                        if (!_isSpeaking) break;
+                        if (token.IsCancellationRequested) break;
 
                         if (i + 1 < chunks.Count)
                         {
                             // Start inferring the next chunk in the background
-                            nextInferenceTask = piperProvider.InferAsync(chunks[i + 1], AudioOutputType.Wav);
+                            nextInferenceTask = piperProvider.InferAsync(chunks[i + 1], AudioOutputType.Wav, token);
                         }
 
                         // Play current chunk
-                        await PlayAudioAsync(audioData);
+                        await AudioPlayer.PlayWavAsync(audioData, token, session);
                     }
                 }
             }
+            catch (OperationCanceledException)
+            {
+                // Stopped by the user.
+            }
             catch (Exception ex)
             {
-                AnnounceError($"Failed to speak: {ex.Message}");
+                // Killing piper mid-inference surfaces as an ordinary failure; it is
+                // not worth announcing when the user asked for the stop.
+                if (!token.IsCancellationRequested)
+                {
+                    AnnounceError($"Failed to speak: {ex.Message}");
+                }
             }
             finally
             {
-                _isSpeaking = false;
+                lock (_stateLock)
+                {
+                    // Only if a newer utterance has not already taken over.
+                    if (ReferenceEquals(_playTokenSource, tokenSource))
+                    {
+                        _isSpeaking = false;
+                        _playTokenSource = null;
+                        _playbackSession = null;
+                    }
+                }
+                tokenSource.Dispose();
             }
         }
 
         public Task StopAsync()
         {
-            _isSpeaking = false;
-            _playbackSession = null;
-            _playTokenSource?.Cancel();
+            lock (_stateLock)
+            {
+                _isSpeaking = false;
+                try { _playTokenSource?.Cancel(); }
+                catch (ObjectDisposedException) { }
+                _playTokenSource = null;
+                _playbackSession = null;
+            }
             return Task.CompletedTask;
         }
 
         public Task PauseAsync()
         {
-            if (_isSpeaking)
+            PlaybackSession session;
+            lock (_stateLock)
             {
-                _playbackSession?.Pause();
+                session = _isSpeaking ? _playbackSession : null;
             }
+            session?.Pause();
             return Task.CompletedTask;
         }
 
         public Task ResumeAsync()
         {
-            _playbackSession?.Resume();
+            PlaybackSession session;
+            lock (_stateLock)
+            {
+                session = _playbackSession;
+            }
+            session?.Resume();
             return Task.CompletedTask;
         }
 
@@ -450,7 +489,7 @@ namespace NarratorHotkey.Speech
             }
         }
 
-        private async Task<dynamic> LoadOrDownloadModelAsync(string voiceName)
+        private async Task<VoiceModel> LoadOrDownloadModelAsync(string voiceName)
         {
             // Create models directory in our persistent Piper location
             var modelsDir = Path.Combine(_piperDir, "models");
@@ -535,24 +574,6 @@ namespace NarratorHotkey.Speech
             {
                 AnnounceError($"Failed to download model {voiceName}: {ex.Message}");
                 return null;
-            }
-        }
-
-        private async Task PlayAudioAsync(byte[] audioData)
-        {
-            _playTokenSource = new System.Threading.CancellationTokenSource();
-            try
-            {
-                await AudioPlayer.PlayWavAsync(audioData, _playTokenSource.Token, _playbackSession);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Failed to play audio: {ex.Message}");
-            }
-            finally
-            {
-                _playTokenSource?.Dispose();
-                _playTokenSource = null;
             }
         }
     }
